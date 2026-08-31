@@ -15,6 +15,7 @@ import logging
 import hashlib
 import webbrowser
 
+# --- Setup AppData Directory ---
 if sys.platform == 'win32':
     app_data_dir = os.environ.get('APPDATA')
 else:
@@ -41,6 +42,7 @@ log.setLevel(logging.ERROR)
 
 client_connected = False
 last_ping_time = time.time()
+last_market_refresh = time.time()
 afk_cooldowns = {}
 
 chat_queue = queue.Queue()
@@ -58,7 +60,10 @@ def load_db():
         "afkMessage": "Ich bin gerade AFK und antworte später!",
         "afkName": "",
         "afkCooldown": 60,
-        "chatLoggerEnabled": True
+        "chatLoggerEnabled": True,
+        "emojiStealerEnabled": True,
+        "autoMarketRefresh": False,
+        "autoMarketInterval": 5
     }
     if DB_FILE.exists():
         try:
@@ -76,6 +81,7 @@ def save_db(db_dict):
 
 db = load_db()
 
+# --- Chat Logger State ---
 class ChatLoggerState:
     def __init__(self):
         self.lock = threading.RLock()
@@ -122,7 +128,6 @@ class ChatLoggerState:
             if event.get('is_bot'):
                 direction = 'out'
         
-        # Sende an die GUI (nur bestätigte Server-Echos oder Fremde)
         if direction != 'out_echo':
             gui_msg = {"time": time_formatted, "user": user, "text": text, "dir": direction}
             chat_queue.put(gui_msg)
@@ -331,7 +336,13 @@ def handle_ping():
 
 @app.route('/api/state', methods=['GET'])
 def get_state():
-    return jsonify(db)
+    state_data = dict(db)
+    actions = []
+    # Send queued commands (e.g. Market Auto-Refresh) to the Browser
+    while not browser_actions_queue.empty():
+        actions.append(browser_actions_queue.get())
+    state_data["actions"] = actions
+    return jsonify(state_data)
 
 @app.route('/api/action', methods=['POST'])
 def handle_action():
@@ -365,11 +376,7 @@ def handle_ws():
     my_id = str(data.get('myId') or "")
     
     handle_ws_event(direction, event, ev_data, my_id)
-    
     actions_for_browser = []
-    
-    while not browser_actions_queue.empty():
-        actions_for_browser.append(browser_actions_queue.get())
     
     if direction == 'in' and event in ['newMessage', 'updateChatLines']:
         msgs = ev_data if isinstance(ev_data, list) else [ev_data]
@@ -419,6 +426,24 @@ def background_flusher():
         except Exception:
             pass
 
+def market_monitor():
+    global last_market_refresh
+    while True:
+        time.sleep(5)
+        if db.get("autoMarketRefresh", False) and client_connected:
+            val = db.get("autoMarketInterval", 5)
+            try:
+                interval_mins = int(val)
+            except:
+                interval_mins = 5
+            
+            if interval_mins < 5:
+                interval_mins = 5
+                
+            if time.time() - last_market_refresh > (interval_mins * 60):
+                last_market_refresh = time.time()
+                browser_actions_queue.put({"type": "auto_extend_market"})
+
 def connection_monitor():
     global client_connected
     while True:
@@ -434,7 +459,7 @@ class ModernTndrHXGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Tndr-HX Control Center")
-        self.root.geometry("950x600")
+        self.root.geometry("950x650")
         self.root.configure(bg="#202225")
         
         style = ttk.Style()
@@ -448,7 +473,6 @@ class ModernTndrHXGUI:
         style.map("TCheckbutton", background=[('active', '#2f3136')])
         style.configure("TButton", font=("Segoe UI", 10, "bold"), background="#5865f2", foreground="white", borderwidth=0, padding=4)
         style.map("TButton", background=[('active', '#4752c4')])
-        style.configure("TEntry", fieldbackground="#36393f", foreground="white", borderwidth=0)
         style.configure("Danger.TButton", background="#ed4245")
         style.map("Danger.TButton", background=[('active', '#c9383b')])
 
@@ -458,14 +482,12 @@ class ModernTndrHXGUI:
         self.right_frame = ttk.Frame(root)
         self.right_frame.pack(side="right", fill="both", expand=True, padx=(0, 20), pady=20)
 
-        # Settings
         ttk.Label(self.left_frame, text="⚙️ Einstellungen", style="Header.TLabel").pack(anchor="w", pady=(0, 15))
         
         self.status_var = tk.StringVar(value="🔴 Offline (Warte auf Browser)")
         self.status_label = ttk.Label(self.left_frame, textvariable=self.status_var, foreground="#ed4245", font=("Segoe UI", 10, "bold"))
         self.status_label.pack(anchor="w", pady=(0, 5))
 
-        # Frontend Connection Warning Frame
         self.warning_container = tk.Frame(self.left_frame, bg="#202225")
         self.warning_container.pack(anchor="w", fill="x", pady=(0, 15))
         
@@ -478,18 +500,36 @@ class ModernTndrHXGUI:
 
         self.create_toggle("📡 Chat Logger (AppData)", self.logger_var, "chatLoggerEnabled")
         
-        ttk.Label(self.left_frame, text="🤖 AFK Bot", style="Header.TLabel").pack(anchor="w", pady=(20, 5))
+        ttk.Label(self.left_frame, text="🤖 AFK Bot", style="Header.TLabel").pack(anchor="w", pady=(15, 5))
         self.create_toggle("AFK-Modus Aktivieren", self.afk_var, "afkMode")
 
-        # Backup
-        ttk.Label(self.left_frame, text="💾 Datenbank", style="Header.TLabel").pack(anchor="w", pady=(35, 10))
+        # Auto-Market
+        ttk.Label(self.left_frame, text="💰 Auto-Market", style="Header.TLabel").pack(anchor="w", pady=(15, 5))
+        self.automarket_var = tk.BooleanVar(value=db.get("autoMarketRefresh", False))
+        self.create_toggle("Auto-Refresh aktiv", self.automarket_var, "autoMarketRefresh")
+        
+        am_frame = tk.Frame(self.left_frame, bg="#202225")
+        am_frame.pack(anchor="w", pady=2, padx=25)
+        tk.Label(am_frame, text="Intervall (Min):", bg="#202225", fg="#b0b0b0", font=("Segoe UI", 9)).pack(side="left")
+        self.am_interval_var = tk.StringVar(value=str(db.get("autoMarketInterval", 5)))
+        
+        def on_am_change(*args):
+            val_str = self.am_interval_var.get()
+            if val_str.isdigit():
+                db["autoMarketInterval"] = int(val_str)
+                save_db(db)
+                
+        self.am_interval_var.trace_add("write", on_am_change)
+        am_entry = tk.Entry(am_frame, textvariable=self.am_interval_var, width=5, bg="#36393f", fg="white", insertbackground="white", borderwidth=1, relief="flat")
+        am_entry.pack(side="left", padx=5)
+
+        ttk.Label(self.left_frame, text="💾 Datenbank", style="Header.TLabel").pack(anchor="w", pady=(25, 10))
         backup_frame = ttk.Frame(self.left_frame)
         backup_frame.pack(fill="x")
         
         ttk.Button(backup_frame, text="📤 Export", command=self.export_backup).pack(side="left", fill="x", expand=True, padx=(0, 2))
         ttk.Button(backup_frame, text="📥 Import", command=self.import_backup).pack(side="right", fill="x", expand=True, padx=(2, 0))
 
-        # Chat
         ttk.Label(self.right_frame, text="💬 Live Chat Monitor", style="Header.TLabel").pack(anchor="w", pady=(0, 10))
         self.chat_text = tk.Text(self.right_frame, bg="#36393f", fg="#dcddde", font=("Segoe UI", 10), wrap="word", borderwidth=0, highlightthickness=1, highlightbackground="#202225")
         self.chat_text.pack(side="left", fill="both", expand=True)
@@ -538,6 +578,8 @@ class ModernTndrHXGUI:
                 save_db(db)
                 self.logger_var.set(db.get("chatLoggerEnabled", True))
                 self.afk_var.set(db.get("afkMode", False))
+                self.automarket_var.set(db.get("autoMarketRefresh", False))
+                self.am_interval_var.set(str(db.get("autoMarketInterval", 5)))
                 messagebox.showinfo("Erfolg", "Backup geladen! Synchronisiert mit Browser im nächsten Zyklus.")
             except Exception as e:
                 messagebox.showerror("Fehler", str(e))
@@ -585,6 +627,7 @@ if __name__ == "__main__":
     threading.Thread(target=connection_monitor, daemon=True).start()
     threading.Thread(target=run_flask, daemon=True).start()
     threading.Thread(target=background_flusher, daemon=True).start()
+    threading.Thread(target=market_monitor, daemon=True).start()
     
     root = tk.Tk()
     gui = ModernTndrHXGUI(root)
