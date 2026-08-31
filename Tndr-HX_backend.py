@@ -1,0 +1,591 @@
+import os
+import sys
+import json
+import time
+import threading
+import queue
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+from datetime import datetime
+from pathlib import Path
+from collections import deque
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import logging
+import hashlib
+
+# --- Setup AppData Directory ---
+if sys.platform == 'win32':
+    app_data_dir = os.environ.get('APPDATA')
+else:
+    app_data_dir = os.path.expanduser('~/.config')
+
+if not app_data_dir:
+    app_data_dir = str(Path.home())
+
+BASE_DIR = Path(app_data_dir) / "Tndr-HX"
+BASE_DIR.mkdir(parents=True, exist_ok=True)
+
+DB_FILE = BASE_DIR / "tndr_hx_data.json"
+CHATLOG_DIR = BASE_DIR / "chat_logs"
+
+PORT = 54321
+CHATLOG_FLUSH_INTERVAL = 10.0
+CHATLOG_FLUSH_BATCH = 50
+
+app = Flask(__name__)
+CORS(app)
+
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
+
+client_connected = False
+last_ping_time = time.time()
+afk_cooldowns = {}
+
+chat_queue = queue.Queue()
+browser_actions_queue = queue.Queue()
+
+def load_db():
+    default_db = {
+        "localEmojis": [],
+        "nextLocalId": 10000,
+        "macros": [],
+        "blockedUsers": [],
+        "blockedWords": [],
+        "alertWords": [],
+        "afkMode": False,
+        "afkMessage": "Ich bin gerade AFK und antworte später!",
+        "afkName": "",
+        "afkCooldown": 60,
+        "chatLoggerEnabled": True,
+        "emojiStealerEnabled": True,
+        "avatarPool": []
+    }
+    if DB_FILE.exists():
+        try:
+            data = json.loads(DB_FILE.read_text(encoding="utf-8"))
+            default_db.update(data)
+        except Exception as e:
+            print(f"Error loading DB: {e}")
+    return default_db
+
+def save_db(db_dict):
+    try:
+        DB_FILE.write_text(json.dumps(db_dict, indent=4, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        print(f"Error saving DB: {e}")
+
+db = load_db()
+
+# --- Chat Logger State ---
+class ChatLoggerState:
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.bot_name = ""
+        
+        self.current_room_id = 1
+        self.current_room_name = None
+        self.room_map = {}
+        
+        self.seen_ids = set()
+        self.seen_order = deque()
+        self.seen_limit = 3500
+        
+        self.chatlog_buffer = []
+        self.chatlog_last_flush = time.time()
+        
+        CHATLOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    def mark_seen(self, mid: str) -> bool:
+        if not mid:
+            return False
+        with self.lock:
+            if mid in self.seen_ids:
+                return False
+            self.seen_ids.add(mid)
+            self.seen_order.append(mid)
+            while len(self.seen_order) > self.seen_limit:
+                old = self.seen_order.popleft()
+                self.seen_ids.discard(old)
+            return True
+
+    def log_chat_event(self, event: dict):
+        ts_str = event.get('ts', datetime.now().isoformat())
+        try:
+            time_formatted = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).strftime("%H:%M:%S")
+        except:
+            time_formatted = datetime.now().strftime("%H:%M:%S")
+            
+        user = event.get('user', 'System')
+        text = event.get('text', '')
+        direction = event.get('dir', 'in')
+        
+        if direction == 'in':
+            if event.get('is_bot'):
+                direction = 'out'
+        
+        # Sende an die GUI (nur bestätigte Server-Echos oder Fremde)
+        if direction != 'out_echo':
+            gui_msg = {"time": time_formatted, "user": user, "text": text, "dir": direction}
+            chat_queue.put(gui_msg)
+
+        if not db.get("chatLoggerEnabled", True):
+            return
+        if not isinstance(event, dict):
+            return
+            
+        with self.lock:
+            self.chatlog_buffer.append(event)
+
+    def flush_chatlog(self, force: bool = False):
+        with self.lock:
+            if not self.chatlog_buffer:
+                return
+            due_time = (time.time() - self.chatlog_last_flush) >= CHATLOG_FLUSH_INTERVAL
+            due_count = len(self.chatlog_buffer) >= CHATLOG_FLUSH_BATCH
+            
+            if not force and not (due_time or due_count):
+                return
+                
+            batch = self.chatlog_buffer[:]
+            self.chatlog_buffer.clear()
+            self.chatlog_last_flush = time.time()
+
+        try:
+            d = datetime.now().strftime("%Y-%m-%d")
+            sub = CHATLOG_DIR / d
+            sub.mkdir(parents=True, exist_ok=True)
+            
+            ts = datetime.now().strftime("%H-%M-%S")
+            room = f"room_{self.current_room_id}"
+            
+            fname_json = f"{room}_{ts}.json"
+            out_json = sub / fname_json
+            out_json.write_text(json.dumps(batch, ensure_ascii=False, indent=2), encoding="utf-8")
+            
+            fname_jsonl = f"{room}_{ts}_raw.jsonl"
+            out_jsonl = sub / fname_jsonl
+            jsonl_lines = [json.dumps(ev, ensure_ascii=False) for ev in batch]
+            out_jsonl.write_text("\n".join(jsonl_lines) + "\n", encoding="utf-8")
+            
+            fname_log = f"{room}_{ts}.log"
+            out_log = sub / fname_log
+            log_lines = []
+            for ev in batch:
+                log_lines.append(f"[{ev.get('ts')}] [{ev.get('dir', 'IN').upper()}] {ev.get('user')}: {ev.get('text')}")
+            out_log.write_text("\n".join(log_lines), encoding="utf-8")
+            
+        except Exception as e:
+            with self.lock:
+                self.chatlog_buffer = batch + self.chatlog_buffer
+
+    def update_room_name(self, rid, rname):
+        if rid is not None and isinstance(rname, str) and rname.strip():
+            with self.lock:
+                self.room_map[int(rid)] = rname.strip()
+
+    def get_room_name(self, rid):
+        with self.lock:
+            if rid == self.current_room_id and self.current_room_name:
+                return self.current_room_name
+            return self.room_map.get(int(rid)) if rid is not None else None
+
+logger_state = ChatLoggerState()
+
+def handle_ws_event(direction: str, event: str, data, my_id: str = ""):
+    if not isinstance(data, dict) and not isinstance(data, list):
+        return
+
+    if direction == "in":
+        if event == "existingUsers":
+            if isinstance(data, dict):
+                myself = data.get("myself")
+                if isinstance(myself, dict):
+                    uname = myself.get("username")
+                    if uname and isinstance(uname, str):
+                        logger_state.bot_name = uname.strip()
+
+                rid = myself.get("currentRoomId")
+                rname = myself.get("currentRoom")
+                logger_state.update_room_name(rid, rname)
+                if rid is not None:
+                    logger_state.current_room_id = int(rid)
+                    if rname:
+                        logger_state.current_room_name = rname.strip()
+                
+                users = data.get("users") or []
+                if isinstance(users, list):
+                    for u in users:
+                        if isinstance(u, dict):
+                            logger_state.update_room_name(u.get("currentRoomId"), u.get("currentRoom"))
+
+        elif event == "userListUpdate":
+            if isinstance(data, list):
+                for u in data:
+                    if isinstance(u, dict):
+                        logger_state.update_room_name(u.get("currentRoomId"), u.get("currentRoom"))
+
+        elif event in ("userJoinedUserList", "userChangedRoom"):
+            if isinstance(data, dict):
+                rid = data.get("currentRoomId") or data.get("roomId")
+                rname = data.get("currentRoom") or data.get("roomName")
+                logger_state.update_room_name(rid, rname)
+
+    elif direction == "out":
+        if event == "joinRoom":
+            if isinstance(data, dict):
+                rid = data.get("room")
+                rname = data.get("roomName")
+                if rid is not None:
+                    logger_state.current_room_id = int(rid)
+                if rname:
+                    logger_state.update_room_name(rid, rname)
+
+    if direction == "in" and event in ("updateChatLines", "newMessage"):
+        msgs = data if isinstance(data, list) else [data]
+        for msg_data in msgs:
+            if not isinstance(msg_data, dict): continue
+            
+            server_id = str(msg_data.get("id") or "").strip()
+            rid = msg_data.get("room") or msg_data.get("roomId")
+            user = (msg_data.get("user") or msg_data.get("nickname") or msg_data.get("senderName") or msg_data.get("userId") or "").strip()
+            text = (msg_data.get("chatLine") or msg_data.get("message") or msg_data.get("speechBubbleText") or msg_data.get("content") or "").strip()
+            ts = (msg_data.get("timestamp") or msg_data.get("time") or "").strip()
+            
+            if not ts:
+                ts = datetime.now().isoformat()
+
+            is_server = bool(msg_data.get("isServerMessage", False))
+            is_join = bool(msg_data.get("isJoin", False))
+            is_leave = bool(msg_data.get("isLeave", False))
+
+            if rid is not None:
+                logger_state.current_room_id = int(rid)
+
+            if server_id:
+                mid = server_id
+            else:
+                raw = f"{rid}|{ts}|{user}|{text}|{is_server}|{is_join}|{is_leave}"
+                mid = "ws-" + hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()[:16]
+
+            if not logger_state.mark_seen(mid):
+                continue
+
+            is_bot_user = False
+            if logger_state.bot_name and user.lower() == logger_state.bot_name.lower():
+                is_bot_user = True
+            sender_id = str(msg_data.get("userId") or msg_data.get("senderId") or msg_data.get("id") or "")
+            if my_id and sender_id == my_id:
+                is_bot_user = True
+
+            room_name = logger_state.get_room_name(rid if rid is not None else logger_state.current_room_id)
+
+            logger_state.log_chat_event({
+                "ts": ts,
+                "dir": "in",
+                "room_id": int(rid) if rid is not None else logger_state.current_room_id,
+                "room_name": room_name,
+                "message_id": mid,
+                "user": user,
+                "text": text,
+                "is_system": bool(is_server or is_join or is_leave),
+                "is_bot": bool(is_bot_user),
+                "url": None,
+                "ws": True,
+                "replyTo": msg_data.get("replyTo"),
+            })
+
+    elif direction == "out" and event in ("sendChatLine", "newMessage"):
+        msgs = data if isinstance(data, list) else [data]
+        for msg_data in msgs:
+            if not isinstance(msg_data, dict): continue
+            
+            text = (msg_data.get("message") or msg_data.get("chatLine") or "").strip()
+            rid = msg_data.get("room") or logger_state.current_room_id
+            
+            reply_to_id = None
+            if event == "newMessage":
+                reply_obj = msg_data.get("replyTo")
+                if isinstance(reply_obj, dict):
+                    reply_to_id = reply_obj.get("id")
+
+            room_name = logger_state.get_room_name(rid)
+
+            logger_state.log_chat_event({
+                "ts": datetime.now().isoformat(),
+                "dir": "out_echo", 
+                "room_id": int(rid),
+                "room_name": room_name,
+                "user": logger_state.bot_name or "Me",
+                "text": text,
+                "reply_to": reply_to_id,
+                "source": "USERSCRIPT",
+                "ws_sent": True,
+                "ws_newMessage": (event == "newMessage"),
+            })
+
+# --- Flask Server ---
+@app.route('/api/ping', methods=['GET'])
+def handle_ping():
+    global last_ping_time, client_connected
+    last_ping_time = time.time()
+    if not client_connected:
+        client_connected = True
+        chat_queue.put({"time": datetime.now().strftime("%H:%M:%S"), "user": "SYSTEM", "text": "Verbindung zum Browser hergestellt.", "dir": "sys"})
+    return jsonify({"status": "ok"})
+
+@app.route('/api/state', methods=['GET'])
+def get_state():
+    return jsonify(db)
+
+@app.route('/api/action', methods=['POST'])
+def handle_action():
+    data = request.json
+    act = data.get('action')
+    payload = data.get('payload')
+    
+    if act == "add_emoji":
+        db["localEmojis"].append(payload)
+        db["nextLocalId"] += 1
+    elif act == "remove_emoji":
+        db["localEmojis"] = [e for e in db["localEmojis"] if str(e["id"]) != str(payload)]
+    elif act == "clear_emojis":
+        db["localEmojis"] = []
+    elif act == "save_macro":
+        db["macros"].append(payload)
+    elif act == "remove_macro":
+        db["macros"] = [m for m in db["macros"] if str(m["id"]) != str(payload)]
+    elif act == "update_setting":
+        db[payload["key"]] = payload["value"]
+    elif act == "update_avatar_pool":
+        db["avatarPool"] = payload
+        
+    save_db(db)
+    return jsonify({"status": "ok"})
+
+@app.route('/api/ws', methods=['POST'])
+def handle_ws():
+    data = request.json
+    direction = data.get('direction')
+    event = data.get('event')
+    ev_data = data.get('data')
+    my_id = str(data.get('myId') or "")
+    
+    handle_ws_event(direction, event, ev_data, my_id)
+    
+    actions_for_browser = []
+    
+    while not browser_actions_queue.empty():
+        actions_for_browser.append(browser_actions_queue.get())
+    
+    # AFK & Sound Alerts Check
+    if direction == 'in' and event in ['newMessage', 'updateChatLines']:
+        msgs = ev_data if isinstance(ev_data, list) else [ev_data]
+        for msg in msgs:
+            if not isinstance(msg, dict): continue
+            
+            text = msg.get('message') or msg.get('text') or msg.get('content') or msg.get('speechBubbleText') or msg.get('chatLine') or ""
+            sender_id = str(msg.get('userId') or msg.get('senderId') or msg.get('id') or "")
+            
+            if my_id and sender_id == my_id:
+                continue 
+                
+            alert_words = db.get("alertWords", [])
+            if alert_words and text:
+                text_lower = text.lower()
+                if any(w.lower() in text_lower for w in alert_words):
+                    actions_for_browser.append({"type": "play_alert"})
+                    
+            if db.get("afkMode") and db.get("afkMessage"):
+                is_mentioned = False
+                if my_id and msg.get("mentions") and my_id in [str(m) for m in msg.get("mentions")]:
+                    is_mentioned = True
+                if my_id and msg.get("replyTo") and str(msg["replyTo"]) == my_id:
+                    is_mentioned = True
+                my_name = db.get("afkName", "").lower()
+                if my_name and my_name in text.lower():
+                    is_mentioned = True
+                    
+                if is_mentioned:
+                    now = time.time()
+                    cd = int(db.get("afkCooldown", 60))
+                    last_replied = afk_cooldowns.get(sender_id, 0)
+                    if (now - last_replied) > cd:
+                        afk_cooldowns[sender_id] = now
+                        actions_for_browser.append({
+                            "type": "send_message",
+                            "text": f"[AFK] {db['afkMessage']}"
+                        })
+
+    return jsonify({"actions": actions_for_browser})
+
+def background_flusher():
+    while True:
+        time.sleep(2.0)
+        try:
+            logger_state.flush_chatlog(force=False)
+        except Exception:
+            pass
+
+def connection_monitor():
+    global client_connected
+    while True:
+        time.sleep(2)
+        if client_connected and (time.time() - last_ping_time > 6):
+            client_connected = False
+            chat_queue.put({"time": datetime.now().strftime("%H:%M:%S"), "user": "SYSTEM", "text": "Verbindung zum Browser verloren.", "dir": "sys"})
+
+def run_flask():
+    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
+
+# --- GUI ---
+class ModernTndrHXGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Tndr-HX Control Center")
+        self.root.geometry("950x600")
+        self.root.configure(bg="#202225")
+        
+        style = ttk.Style()
+        if "clam" in style.theme_names():
+            style.theme_use("clam")
+            
+        style.configure("TFrame", background="#202225")
+        style.configure("TLabel", background="#202225", foreground="#dcddde", font=("Segoe UI", 10))
+        style.configure("Header.TLabel", font=("Segoe UI", 15, "bold"), foreground="#ffffff")
+        style.configure("TCheckbutton", background="#202225", foreground="#dcddde", font=("Segoe UI", 10), focuscolor="#202225")
+        style.map("TCheckbutton", background=[('active', '#2f3136')])
+        style.configure("TButton", font=("Segoe UI", 10, "bold"), background="#5865f2", foreground="white", borderwidth=0, padding=4)
+        style.map("TButton", background=[('active', '#4752c4')])
+        style.configure("TEntry", fieldbackground="#36393f", foreground="white", borderwidth=0)
+        style.configure("Danger.TButton", background="#ed4245")
+        style.map("Danger.TButton", background=[('active', '#c9383b')])
+
+        self.left_frame = ttk.Frame(root, width=320)
+        self.left_frame.pack(side="left", fill="y", padx=20, pady=20)
+        
+        self.right_frame = ttk.Frame(root)
+        self.right_frame.pack(side="right", fill="both", expand=True, padx=(0, 20), pady=20)
+
+        # Settings
+        ttk.Label(self.left_frame, text="⚙️ Einstellungen", style="Header.TLabel").pack(anchor="w", pady=(0, 15))
+        
+        self.status_var = tk.StringVar(value="🔴 Offline (Warte auf Browser)")
+        self.status_label = ttk.Label(self.left_frame, textvariable=self.status_var, foreground="#ed4245", font=("Segoe UI", 10, "bold"))
+        self.status_label.pack(anchor="w", pady=(0, 15))
+
+        self.logger_var = tk.BooleanVar(value=db.get("chatLoggerEnabled", True))
+        self.stealer_var = tk.BooleanVar(value=db.get("emojiStealerEnabled", True))
+        self.afk_var = tk.BooleanVar(value=db.get("afkMode", False))
+
+        self.create_toggle("📡 Chat Logger (AppData)", self.logger_var, "chatLoggerEnabled")
+        self.create_toggle("🥷 Emoji-Dieb (Live)", self.stealer_var, "emojiStealerEnabled")
+        
+        ttk.Label(self.left_frame, text="🤖 AFK Bot", style="Header.TLabel").pack(anchor="w", pady=(20, 5))
+        self.create_toggle("AFK-Modus Aktivieren", self.afk_var, "afkMode")
+
+        # Backup
+        ttk.Label(self.left_frame, text="💾 Datenbank", style="Header.TLabel").pack(anchor="w", pady=(35, 10))
+        backup_frame = ttk.Frame(self.left_frame)
+        backup_frame.pack(fill="x")
+        
+        ttk.Button(backup_frame, text="📤 Export", command=self.export_backup).pack(side="left", fill="x", expand=True, padx=(0, 2))
+        ttk.Button(backup_frame, text="📥 Import", command=self.import_backup).pack(side="right", fill="x", expand=True, padx=(2, 0))
+
+        # Chat
+        ttk.Label(self.right_frame, text="💬 Live Chat Monitor", style="Header.TLabel").pack(anchor="w", pady=(0, 10))
+        self.chat_text = tk.Text(self.right_frame, bg="#36393f", fg="#dcddde", font=("Segoe UI", 10), wrap="word", borderwidth=0, highlightthickness=1, highlightbackground="#202225")
+        self.chat_text.pack(side="left", fill="both", expand=True)
+        
+        scrollbar = ttk.Scrollbar(self.right_frame, command=self.chat_text.yview)
+        scrollbar.pack(side="right", fill="y")
+        self.chat_text.configure(yscrollcommand=scrollbar.set)
+        
+        self.chat_text.tag_config("time", foreground="#72767d")
+        self.chat_text.tag_config("user_in", foreground="#5865f2", font=("Segoe UI", 10, "bold"))
+        self.chat_text.tag_config("user_out", foreground="#3ba55c", font=("Segoe UI", 10, "bold"))
+        self.chat_text.tag_config("sys", foreground="#faa61a", font=("Segoe UI", 10, "italic"))
+        self.chat_text.tag_config("text", foreground="#dcddde")
+        
+        self.chat_text.config(state="normal")
+        self.chat_text.insert("end", "[System] Tndr-HX Server gestartet.\n", "sys")
+        self.chat_text.insert("end", f"[System] Verzeichnis: {BASE_DIR}\n", "sys")
+        self.chat_text.config(state="disabled")
+
+        self.update_gui_loop()
+
+    def create_toggle(self, text, variable, db_key):
+        def on_toggle():
+            db[db_key] = variable.get()
+            save_db(db)
+        cb = ttk.Checkbutton(self.left_frame, text=text, variable=variable, command=on_toggle)
+        cb.pack(anchor="w", pady=4)
+
+    def export_backup(self):
+        file_path = filedialog.asksaveasfilename(defaultextension=".json", initialfile=f"tndr_hx_backup_{datetime.now().strftime('%Y-%m-%d')}.json", title="Backup speichern", filetypes=[("JSON", "*.json")])
+        if file_path:
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    json.dump(db, f, indent=4, ensure_ascii=False)
+                messagebox.showinfo("Erfolg", "Backup gesichert!")
+            except Exception as e:
+                messagebox.showerror("Fehler", str(e))
+
+    def import_backup(self):
+        file_path = filedialog.askopenfilename(title="Backup laden", filetypes=[("JSON", "*.json")])
+        if file_path:
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    imported = json.load(f)
+                db.update(imported)
+                save_db(db)
+                self.logger_var.set(db.get("chatLoggerEnabled", True))
+                self.stealer_var.set(db.get("emojiStealerEnabled", True))
+                self.afk_var.set(db.get("afkMode", False))
+                messagebox.showinfo("Erfolg", "Backup geladen! Synchronisiert mit Browser im nächsten Zyklus.")
+            except Exception as e:
+                messagebox.showerror("Fehler", str(e))
+
+    def update_gui_loop(self):
+        if client_connected:
+            self.status_var.set("🟢 Verbunden mit Tandro")
+            self.status_label.configure(foreground="#3ba55c")
+        else:
+            self.status_var.set("🔴 Offline (Kein Tab offen)")
+            self.status_label.configure(foreground="#ed4245")
+            
+        if db.get("afkMode") != self.afk_var.get():
+            self.afk_var.set(db.get("afkMode", False))
+
+        if not chat_queue.empty():
+            self.chat_text.config(state="normal")
+            while not chat_queue.empty():
+                msg = chat_queue.get()
+                time_str = f"[{msg['time']}] "
+                self.chat_text.insert("end", time_str, "time")
+                if msg['dir'] == 'sys':
+                    self.chat_text.insert("end", f"{msg['user']}: {msg['text']}\n", "sys")
+                else:
+                    user_tag = "user_out" if msg['dir'] == 'out' else "user_in"
+                    self.chat_text.insert("end", f"{msg['user']}: ", user_tag)
+                    self.chat_text.insert("end", f"{msg['text']}\n", "text")
+            self.chat_text.see("end")
+            self.chat_text.config(state="disabled")
+
+        self.root.after(100, self.update_gui_loop)
+
+def on_closing():
+    logger_state.flush_chatlog(force=True)
+    root.destroy()
+    os._exit(0)
+
+if __name__ == "__main__":
+    threading.Thread(target=connection_monitor, daemon=True).start()
+    threading.Thread(target=run_flask, daemon=True).start()
+    threading.Thread(target=background_flusher, daemon=True).start()
+    
+    root = tk.Tk()
+    gui = ModernTndrHXGUI(root)
+    root.protocol("WM_DELETE_WINDOW", on_closing)
+    root.mainloop()
