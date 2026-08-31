@@ -162,19 +162,14 @@
           
           for (let key in payload) {
               const val = payload[key];
-              
-              if (key.toLowerCase().includes('category')) {
-                  catKey = key;
-              }
+              if (key.toLowerCase().includes('category')) { catKey = key; }
               
               if (typeof val === 'number' || (typeof val === 'string' && !isNaN(parseInt(val)))) {
                   const numVal = parseInt(val);
                   if (state.ownAvatars && state.ownAvatars.some(a => a.useravatar_id === numVal)) {
-                      idKey = key;
-                      idType = 'useravatar_id';
+                      idKey = key; idType = 'useravatar_id';
                   } else if (state.ownAvatars && state.ownAvatars.some(a => a.id === numVal)) {
-                      idKey = key;
-                      idType = 'id';
+                      idKey = key; idType = 'id';
                   } else if (numVal >= 0 && numVal < 1000000 && (key.toLowerCase().includes('price') || key.toLowerCase().includes('cost') || key.toLowerCase().includes('amount'))) { 
                       priceKey = key;
                   } else if (!priceKey && numVal >= 0 && numVal < 1000000 && !key.toLowerCase().includes('category')) {
@@ -184,9 +179,7 @@
           }
           
           if (idKey) {
-              gmSet('sell_template', payload);
-              gmSet('sell_id_key', idKey);
-              gmSet('sell_id_type', idType);
+              gmSet('sell_template', payload); gmSet('sell_id_key', idKey); gmSet('sell_id_type', idType);
               if (priceKey) gmSet('sell_price_key', priceKey);
               if (catKey) gmSet('sell_cat_key', catKey);
               showToast('✅ Auto-Sell Format erfolgreich gelernt!', 'success');
@@ -308,20 +301,20 @@
       }
   }
 
-  async function fetchMyListings() {
+  async function fetchMyListings(silent = false) {
       let token = getToken();
       let myId = getMyUserIdFromToken() || state.myUserId;
 
-      if (!token || !myId) return showToast('Auth Fehler. Token oder ID fehlt!', 'error');
+      if (!token || !myId) return;
       
       let allItems = [];
       const btn = document.getElementById('tm-load-market');
-      if(btn) { btn.textContent = 'Scanne Markt...'; btn.disabled = true; }
+      if(btn && !silent) { btn.textContent = 'Scanne Markt...'; btn.disabled = true; }
       
       try {
           let maxPages = 30; 
           for(let p = 1; p <= maxPages; p++) {
-              if(btn) btn.textContent = `Scanne Seite ${p}...`;
+              if(btn && !silent) btn.textContent = `Scanne Seite ${p}...`;
               let res = await GM_xmlhttpRequestPromise({
                   method: 'GET',
                   url: `https://tandro.de/api/marketplace/list?page=${p}&limit=50&sortBy=newest`,
@@ -329,11 +322,9 @@
               });
               
               let data = JSON.parse(res.responseText);
-              
               if (data.totalPages && p === 1) maxPages = Math.min(data.totalPages, 50);
               
               let items = data.avatars || data.items || data.data || [];
-              
               if (!items || items.length === 0) {
                   if (Array.isArray(data)) items = data;
                   else {
@@ -352,49 +343,49 @@
               return uId === String(myId);
           });
           
-          renderMyListings();
-          if(btn) { btn.textContent = '🔄 Angebote laden'; btn.disabled = false; }
+          if(!silent) renderMyListings();
+          if(btn && !silent) { btn.textContent = '🔄 Angebote laden'; btn.disabled = false; }
           
-          if (state.myListings.length > 0) {
-              showToast(`${state.myListings.length} eigene Angebote gefunden!`, 'success');
-          } else {
-              showToast(`Keine gefunden. Markt durchsucht (${allItems.length} Items).`, 'info');
+          if (!silent) {
+              if (state.myListings.length > 0) {
+                  showToast(`${state.myListings.length} eigene Angebote gefunden!`, 'success');
+              } else {
+                  showToast(`Keine gefunden. Markt durchsucht (${allItems.length} Items).`, 'info');
+              }
           }
-          
       } catch(e) {
-          showToast('Fehler beim Laden des Marktes', 'error');
-          if(btn) { btn.textContent = '🔄 Angebote laden'; btn.disabled = false; }
+          if(!silent) {
+              showToast('Fehler beim Laden des Marktes', 'error');
+              if(btn) { btn.textContent = '🔄 Angebote laden'; btn.disabled = false; }
+          }
       }
   }
 
   async function deleteListing(id) {
       let token = getToken();
       if (!token) return;
-      
       try {
           await GM_xmlhttpRequestPromise({
               method: 'DELETE',
               url: `https://tandro.de/api/marketplace/${id}`,
               headers: { 'Authorization': `Bearer ${token}` }
           });
-          
           state.myListings = state.myListings.filter(i => i.id !== id);
           renderMyListings();
           showToast('Angebot erfolgreich gelöscht!', 'success');
-      } catch(e) {
-          showToast('Fehler beim Löschen des Angebots.', 'error');
-      }
+      } catch(e) { showToast('Fehler beim Löschen des Angebots.', 'error'); }
   }
 
-  async function extendAllListings() {
+  async function extendAllListings(silent = false) {
       if (!state.myListings || state.myListings.length === 0) {
-          return showToast('Keine Angebote geladen! Bitte zuerst scannen.', 'error');
+          if(!silent) showToast('Keine Angebote geladen! Bitte zuerst scannen.', 'error');
+          return;
       }
       let token = getToken();
-      if (!token) return showToast('Auth-Token nicht gefunden!', 'error');
+      if (!token) return;
 
       const btn = document.getElementById('tm-extend-market');
-      if (btn) { btn.disabled = true; btn.textContent = 'Pushe...'; btn.style.opacity = '0.7'; }
+      if (btn && !silent) { btn.disabled = true; btn.textContent = 'Pushe...'; btn.style.opacity = '0.7'; }
 
       let successCount = 0;
       for (const item of state.myListings) {
@@ -404,18 +395,16 @@
                   url: `https://tandro.de/api/marketplace/extend/${item.id}`,
                   headers: { 'Authorization': `Bearer ${token}` }
               });
-              if (res.status >= 200 && res.status < 300) {
-                  successCount++;
-              }
+              if (res.status >= 200 && res.status < 300) { successCount++; }
           } catch(e) {}
           await new Promise(r => setTimeout(r, 350));
       }
 
-      if (btn) { btn.disabled = false; btn.textContent = '🚀 Alle Pushen'; btn.style.opacity = '1'; }
+      if (btn && !silent) { btn.disabled = false; btn.textContent = '🚀 Alle Pushen'; btn.style.opacity = '1'; }
       
       if (successCount > 0) {
-          showToast(`${successCount} Angebote erfolgreich gepusht!`, 'success');
-      } else {
+          showToast(silent ? `🤖 Auto-Market: ${successCount} Angebote erfolgreich gepusht!` : `${successCount} Angebote erfolgreich gepusht!`, 'success');
+      } else if (!silent) {
           showToast('Fehler beim Pushen der Angebote.', 'error');
       }
   }
@@ -767,15 +756,7 @@
     }
 
     apiCall('/ws', 'POST', { direction: payload.direction, event: payload.event, data: payload.data, myId: state.myUserId })
-    .then(res => {
-        state.backendConnected = true; updateStatus();
-        if (res && res.actions) {
-            res.actions.forEach(act => {
-                if (act.type === 'play_alert') playAlertSound();
-                if (act.type === 'send_message') setTimeout(() => sendText(act.text), 1500);
-            });
-        }
-    }).catch(() => { state.backendConnected = false; updateStatus(); });
+    .catch(() => {});
   });
 
   function playAlertSound() {
@@ -883,8 +864,21 @@
         .then(async () => {
           if (!state.backendConnected) { state.backendConnected = true; updateStatus(); showToast("Verbindung zum Backend hergestellt!", "success"); }
           try {
-              const db = await apiCall('/state', 'GET');
-              Object.assign(state, db);
+              const data = await apiCall('/state', 'GET');
+              
+              if (data.actions && data.actions.length > 0) {
+                  data.actions.forEach(act => {
+                      if (act.type === 'play_alert') playAlertSound();
+                      if (act.type === 'send_message') setTimeout(() => sendText(act.text), 1500);
+                      if (act.type === 'auto_extend_market') {
+                          showToast('🤖 Auto-Market: Aktualisiere Angebote...', 'info');
+                          fetchMyListings(true).then(() => extendAllListings(true));
+                      }
+                  });
+              }
+              
+              delete data.actions;
+              Object.assign(state, data);
               renderGallery(); renderMacros(); renderBlocks();
               window.dispatchEvent(new CustomEvent('TndrHXSyncBlocks', { detail: { users: state.blockedUsers, words: state.blockedWords } }));
           } catch(e) {}
@@ -1149,7 +1143,7 @@
 
       <div id="tab-avatars" class="tm-tab-content">
         <div style="font-weight:600;color:var(--tm-primary);margin-bottom:8px;">🥷 Geklaute Avatare (In Vault speichern)</div>
-        <div style="font-size:11px;color:var(--tm-text-muted);margin-bottom:8px;">Einmalig einen manuell hochladen, damit das Skript die API lernt. Klicke dann hier auf gefundene Avatare.</div>
+        <div style="font-size:11px;color:var(--tm-text-muted);margin-bottom:8px;">Einmalig einen manuell hochladen, damit das Skript die API lernt. Klicke dann hier auf gefundene Avatare im Chat.</div>
         <div id="tm-avatar-list" style="display:flex;flex-wrap:wrap;gap:8px;flex:1;min-height:0;overflow-y:auto;align-content:start;margin-bottom:4px;background:rgba(0,0,0,0.2);padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.05);"></div>
       </div>
 
@@ -1225,8 +1219,8 @@
       });
     });
 
-    panel.querySelector('#tm-load-market').addEventListener('click', fetchMyListings);
-    panel.querySelector('#tm-extend-market').addEventListener('click', extendAllListings);
+    panel.querySelector('#tm-load-market').addEventListener('click', () => fetchMyListings(false));
+    panel.querySelector('#tm-extend-market').addEventListener('click', () => extendAllListings(false));
 
     panel.querySelector('#tm-sell-all').addEventListener('click', async (e) => {
         if (!state.ownAvatars || state.ownAvatars.length === 0) return showToast('Kleiderschrank leer! Bitte im Chat öffnen.', 'error');
@@ -1254,7 +1248,7 @@
         
         if (soldCount > 0) {
             showToast(`Erfolgreich ${soldCount} Avatare auf den Markt gestellt! 💰`, 'success');
-            setTimeout(fetchMyListings, 1000); 
+            setTimeout(() => fetchMyListings(false), 1000); 
         } else {
             showToast('Keine Avatare verkauft.', 'error');
         }
