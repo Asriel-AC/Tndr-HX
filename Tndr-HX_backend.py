@@ -13,8 +13,8 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import logging
 import hashlib
+import webbrowser
 
-# --- Setup AppData Directory ---
 if sys.platform == 'win32':
     app_data_dir = os.environ.get('APPDATA')
 else:
@@ -58,9 +58,7 @@ def load_db():
         "afkMessage": "Ich bin gerade AFK und antworte später!",
         "afkName": "",
         "afkCooldown": 60,
-        "chatLoggerEnabled": True,
-        "emojiStealerEnabled": True,
-        "avatarPool": []
+        "chatLoggerEnabled": True
     }
     if DB_FILE.exists():
         try:
@@ -78,7 +76,6 @@ def save_db(db_dict):
 
 db = load_db()
 
-# --- Chat Logger State ---
 class ChatLoggerState:
     def __init__(self):
         self.lock = threading.RLock()
@@ -273,8 +270,6 @@ def handle_ws_event(direction: str, event: str, data, my_id: str = ""):
                 continue
 
             is_bot_user = False
-            if logger_state.bot_name and user.lower() == logger_state.bot_name.lower():
-                is_bot_user = True
             sender_id = str(msg_data.get("userId") or msg_data.get("senderId") or msg_data.get("id") or "")
             if my_id and sender_id == my_id:
                 is_bot_user = True
@@ -325,7 +320,6 @@ def handle_ws_event(direction: str, event: str, data, my_id: str = ""):
                 "ws_newMessage": (event == "newMessage"),
             })
 
-# --- Flask Server ---
 @app.route('/api/ping', methods=['GET'])
 def handle_ping():
     global last_ping_time, client_connected
@@ -358,8 +352,6 @@ def handle_action():
         db["macros"] = [m for m in db["macros"] if str(m["id"]) != str(payload)]
     elif act == "update_setting":
         db[payload["key"]] = payload["value"]
-    elif act == "update_avatar_pool":
-        db["avatarPool"] = payload
         
     save_db(db)
     return jsonify({"status": "ok"})
@@ -379,7 +371,6 @@ def handle_ws():
     while not browser_actions_queue.empty():
         actions_for_browser.append(browser_actions_queue.get())
     
-    # AFK & Sound Alerts Check
     if direction == 'in' and event in ['newMessage', 'updateChatLines']:
         msgs = ev_data if isinstance(ev_data, list) else [ev_data]
         for msg in msgs:
@@ -439,7 +430,6 @@ def connection_monitor():
 def run_flask():
     app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
-# --- GUI ---
 class ModernTndrHXGUI:
     def __init__(self, root):
         self.root = root
@@ -473,14 +463,20 @@ class ModernTndrHXGUI:
         
         self.status_var = tk.StringVar(value="🔴 Offline (Warte auf Browser)")
         self.status_label = ttk.Label(self.left_frame, textvariable=self.status_var, foreground="#ed4245", font=("Segoe UI", 10, "bold"))
-        self.status_label.pack(anchor="w", pady=(0, 15))
+        self.status_label.pack(anchor="w", pady=(0, 5))
+
+        # Frontend Connection Warning Frame
+        self.warning_container = tk.Frame(self.left_frame, bg="#202225")
+        self.warning_container.pack(anchor="w", fill="x", pady=(0, 15))
+        
+        self.warning_lbl1 = tk.Label(self.warning_container, text="⚠️ Frontend nicht verbunden!", bg="#ed4245", fg="white", font=("Segoe UI", 9, "bold"))
+        self.warning_lbl2 = tk.Label(self.warning_container, text="Userscript hier downloaden", bg="#ed4245", fg="white", font=("Segoe UI", 9, "underline"), cursor="hand2")
+        self.warning_lbl2.bind("<Button-1>", lambda e: webbrowser.open("https://github.com/Asriel-AC/Tndr-HX/blob/main/Tndr-HX_client.js"))
 
         self.logger_var = tk.BooleanVar(value=db.get("chatLoggerEnabled", True))
-        self.stealer_var = tk.BooleanVar(value=db.get("emojiStealerEnabled", True))
         self.afk_var = tk.BooleanVar(value=db.get("afkMode", False))
 
         self.create_toggle("📡 Chat Logger (AppData)", self.logger_var, "chatLoggerEnabled")
-        self.create_toggle("🥷 Emoji-Dieb (Live)", self.stealer_var, "emojiStealerEnabled")
         
         ttk.Label(self.left_frame, text="🤖 AFK Bot", style="Header.TLabel").pack(anchor="w", pady=(20, 5))
         self.create_toggle("AFK-Modus Aktivieren", self.afk_var, "afkMode")
@@ -541,7 +537,6 @@ class ModernTndrHXGUI:
                 db.update(imported)
                 save_db(db)
                 self.logger_var.set(db.get("chatLoggerEnabled", True))
-                self.stealer_var.set(db.get("emojiStealerEnabled", True))
                 self.afk_var.set(db.get("afkMode", False))
                 messagebox.showinfo("Erfolg", "Backup geladen! Synchronisiert mit Browser im nächsten Zyklus.")
             except Exception as e:
@@ -551,9 +546,15 @@ class ModernTndrHXGUI:
         if client_connected:
             self.status_var.set("🟢 Verbunden mit Tandro")
             self.status_label.configure(foreground="#3ba55c")
+            self.warning_lbl1.pack_forget()
+            self.warning_lbl2.pack_forget()
+            self.warning_container.configure(bg="#202225")
         else:
             self.status_var.set("🔴 Offline (Kein Tab offen)")
             self.status_label.configure(foreground="#ed4245")
+            self.warning_container.configure(bg="#ed4245")
+            self.warning_lbl1.pack(fill="x", pady=(4,0))
+            self.warning_lbl2.pack(fill="x", pady=(0,4))
             
         if db.get("afkMode") != self.afk_var.get():
             self.afk_var.set(db.get("afkMode", False))
