@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Tndr-HX
 // @namespace    tm-tndr-hx-tools
-// @version      6.3.0
-// @description  Unendlich Emojis, Makros, Emoji-Dieb, Block+, Avatar Steal-To-Vault. Remote-Controlled by Python.
-// @author       Asriel
+// @version      1.0.0
+// @description  Unendlich Emojis, Makros, Emoji-Dieb, Block+, Avatar Steal-To-Vault & Market-Manager. Remote-Controlled by Python.
+// @author       Asriel 
 // @license      GPL-3.0
 // @match        https://tandro.de/*
 // @run-at       document-start
@@ -24,17 +24,44 @@
   function gmGet(k, d) { try { const v = localStorage.getItem(`tm_${k}`); return v ? JSON.parse(v) : d; } catch { return d; } }
   function gmSet(k, v) { try { localStorage.setItem(`tm_${k}`, JSON.stringify(v)); } catch {} }
 
+  function getToken() {
+      try {
+          const raw = localStorage.getItem('auth') || localStorage.getItem('token');
+          if (raw) {
+              try { const parsed = JSON.parse(raw); return parsed.token || raw; } 
+              catch(e) { return raw; }
+          }
+      } catch(e) {}
+      return null;
+  }
+
+  function getMyUserIdFromToken() {
+      let token = getToken();
+      if (!token) return null;
+      try {
+          let base64Url = token.split('.')[1];
+          let base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+          let jsonPayload = decodeURIComponent(atob(base64).split('').map(function(c) {
+              return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+          }).join(''));
+          let decoded = JSON.parse(jsonPayload);
+          return decoded.userId || decoded.id || null;
+      } catch(e) {
+          return null;
+      }
+  }
+
   const state = {
     myUserId: null,
     currentRoomId: null,
     wsConnected: false,
-
+    
     panelPos: gmGet('panel_pos', { left: null, top: null }),
     panelSize: gmGet('panel_size', { width: 380, height: 500 }),
     collapsed: gmGet('collapsed', true),
     searchTerm: '',
-    seenEmojis: [],
-    knownUsers: {},
+    seenEmojis: [], 
+    knownUsers: {}, 
     activeTab: 'emojis',
     backendConnected: false,
 
@@ -44,31 +71,30 @@
     blockedUsers: [],
     blockedWords: [],
     alertWords: [],
-
+    
     afkMode: false,
     afkMessage: '',
     afkName: '',
     afkCooldown: 60,
-    emojiStealerEnabled: true
+
+    ownAvatars: [],
+    myListings: []
   };
 
   const ui = {};
-
-  // Permanent Whitelist für eigene Avatare
   const savedUploads = gmGet('uploaded_avatars', []);
   const uploadedAvatars = new Set(savedUploads);
-  const seenAvatars = new Set();
+  const seenAvatars = new Set(); 
   let audioCtx = null;
 
   function markAvatarAsOwned(url) {
     if (!url) return;
     if (!uploadedAvatars.has(url)) {
         uploadedAvatars.add(url);
-
         clearTimeout(window._saveUploadsTimeout);
         window._saveUploadsTimeout = setTimeout(() => {
             let arr = Array.from(uploadedAvatars);
-            if (arr.length > 2000) arr = arr.slice(-2000);
+            if (arr.length > 2000) arr = arr.slice(-2000); 
             gmSet('uploaded_avatars', arr);
         }, 1000);
     }
@@ -77,7 +103,9 @@
   window.addEventListener('TndrHXOwnAvatars', (e) => {
     try {
         const avatars = JSON.parse(e.detail);
+        state.ownAvatars = avatars;
         avatars.forEach(av => { if (av.url) markAvatarAsOwned(av.url); });
+        renderOwnAvatars();
     } catch(e) {}
   });
 
@@ -89,7 +117,7 @@
         headers: { "Content-Type": "application/json" },
         data: payload ? JSON.stringify(payload) : null,
         onload: (res) => {
-          try { resolve(JSON.parse(res.responseText)); }
+          try { resolve(JSON.parse(res.responseText)); } 
           catch(e) { reject("Parse Error"); }
         },
         onerror: reject
@@ -120,8 +148,50 @@
           gmSet('upload_template', data.template);
           gmSet('upload_img_key', data.imgKey);
           gmSet('upload_prefix', data.usePrefix);
-          showToast('✅ Upload-API Format erfolgreich gelernt!', 'success');
+          showToast('✅ Upload-API Format gelernt!', 'success');
       } catch(e) {}
+  });
+
+  window.addEventListener('TndrHXLearnSell', (e) => {
+      try {
+          const payload = JSON.parse(e.detail);
+          let idKey = null;
+          let priceKey = null;
+          let catKey = null;
+          let idType = 'useravatar_id';
+          
+          for (let key in payload) {
+              const val = payload[key];
+              
+              if (key.toLowerCase().includes('category')) {
+                  catKey = key;
+              }
+              
+              if (typeof val === 'number' || (typeof val === 'string' && !isNaN(parseInt(val)))) {
+                  const numVal = parseInt(val);
+                  if (state.ownAvatars && state.ownAvatars.some(a => a.useravatar_id === numVal)) {
+                      idKey = key;
+                      idType = 'useravatar_id';
+                  } else if (state.ownAvatars && state.ownAvatars.some(a => a.id === numVal)) {
+                      idKey = key;
+                      idType = 'id';
+                  } else if (numVal >= 0 && numVal < 1000000 && (key.toLowerCase().includes('price') || key.toLowerCase().includes('cost') || key.toLowerCase().includes('amount'))) { 
+                      priceKey = key;
+                  } else if (!priceKey && numVal >= 0 && numVal < 1000000 && !key.toLowerCase().includes('category')) {
+                      priceKey = key; 
+                  }
+              }
+          }
+          
+          if (idKey) {
+              gmSet('sell_template', payload);
+              gmSet('sell_id_key', idKey);
+              gmSet('sell_id_type', idType);
+              if (priceKey) gmSet('sell_price_key', priceKey);
+              if (catKey) gmSet('sell_cat_key', catKey);
+              showToast('✅ Auto-Sell Format erfolgreich gelernt!', 'success');
+          }
+      } catch(err) {}
   });
 
   async function processAndUploadAvatar(url, manualClick = false) {
@@ -133,50 +203,35 @@
     const template = gmGet('upload_template');
     const imgKey = gmGet('upload_img_key');
     const usePrefix = gmGet('upload_prefix', true);
-
     if (!template || !imgKey) {
-        if(manualClick) showToast('Bitte lade zuerst EINEN Avatar manuell über das Spiel hoch, damit das Skript das API-Format lernt!', 'error');
+        if(manualClick) showToast('Bitte lade zuerst EINEN Avatar manuell hoch, damit das Skript lernt!', 'error');
         return;
     }
 
-    let token = '';
-    try {
-        const raw = localStorage.getItem('auth') || localStorage.getItem('token');
-        if (raw) { try { token = JSON.parse(raw).token || raw; } catch(e) { token = raw; } }
-    } catch(e) {}
+    let token = getToken();
+    if (!token) return showToast('Fehler: Auth-Token nicht gefunden!', 'error');
 
-    if (!token) {
-        if(manualClick) showToast('Fehler: Auth-Token nicht gefunden!', 'error');
-        return;
-    }
-
-    uploadedAvatars.add(url); // Verhindert parallele Upload-Races
+    uploadedAvatars.add(url);
     if(manualClick) showToast('Klau-Vorgang läuft...', 'info');
 
     try {
         const res = await GM_xmlhttpRequestPromise({ method: 'GET', url: url, responseType: 'blob' });
         const blob = res.response;
-
-        // Strip EXIF via Canvas
         const imageBitmap = await createImageBitmap(blob);
         const canvas = document.createElement('canvas');
         canvas.width = imageBitmap.width; canvas.height = imageBitmap.height;
         canvas.getContext('2d').drawImage(imageBitmap, 0, 0);
-
+        
         let base64 = canvas.toDataURL('image/png');
         if (!usePrefix) base64 = base64.split(',')[1];
 
-        // Build Payload from Template
         let payload = Object.assign({}, template);
         payload[imgKey] = base64;
 
         const upRes = await GM_xmlhttpRequestPromise({
             method: 'POST',
             url: 'https://tandro.de/api/avatars/upload',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${token}`
-            },
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
             data: JSON.stringify(payload)
         });
 
@@ -185,13 +240,184 @@
             markAvatarAsOwned(url);
         } else {
             showToast(`Upload fehlgeschlagen: HTTP ${upRes.status}`, 'error');
-            uploadedAvatars.delete(url); // Allow retry
+            uploadedAvatars.delete(url); 
         }
-
     } catch (e) {
         showToast('Fehler beim Auto-Upload.', 'error');
         uploadedAvatars.delete(url);
     }
+  }
+
+  async function sellAvatar(avatarObj, silent = false) {
+      const template = gmGet('sell_template');
+      const idKey = gmGet('sell_id_key');
+      const priceKey = gmGet('sell_price_key');
+      const catKey = gmGet('sell_cat_key', 'categoryId');
+      const idType = gmGet('sell_id_type', 'useravatar_id');
+      const priceInput = document.getElementById('tm-sell-price');
+      const price = priceInput ? parseInt(priceInput.value) : 10;
+
+      if (!template || !idKey) {
+          if (!silent) showToast('Bitte verkaufe EINEN Avatar manuell, um das API-Format zu lernen!', 'error');
+          return false;
+      }
+
+      let token = getToken();
+      if (!token) {
+          if (!silent) showToast('Auth-Token nicht gefunden!', 'error');
+          return false;
+      }
+
+      let payload = Object.assign({}, template);
+      payload[idKey] = avatarObj[idType];
+      if (priceKey) payload[priceKey] = isNaN(price) ? 10 : price;
+
+      if (catKey && payload.hasOwnProperty(catKey)) {
+          if (avatarObj.categories && avatarObj.categories.length > 0) {
+              payload[catKey] = avatarObj.categories[0].id; 
+          } else {
+              payload[catKey] = null; 
+          }
+      }
+
+      if (!silent) showToast('Stelle in den Markt...', 'info');
+
+      try {
+          const upRes = await GM_xmlhttpRequestPromise({
+              method: 'POST',
+              url: 'https://tandro.de/api/marketplace/sell',
+              headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${token}`
+              },
+              data: JSON.stringify(payload)
+          });
+
+          if (upRes.status >= 200 && upRes.status < 300) {
+              if (!silent) showToast('💰 Avatar erfolgreich auf dem Marktplatz!', 'success');
+              state.ownAvatars = state.ownAvatars.filter(a => a.id !== avatarObj.id);
+              renderOwnAvatars();
+              return true;
+          } else {
+              if (!silent) showToast(`Verkauf fehlgeschlagen: HTTP ${upRes.status}`, 'error');
+              return false;
+          }
+      } catch (e) {
+          if (!silent) showToast('Fehler beim Auto-Sell.', 'error');
+          return false;
+      }
+  }
+
+  async function fetchMyListings() {
+      let token = getToken();
+      let myId = getMyUserIdFromToken() || state.myUserId;
+
+      if (!token || !myId) return showToast('Auth Fehler. Token oder ID fehlt!', 'error');
+      
+      let allItems = [];
+      const btn = document.getElementById('tm-load-market');
+      if(btn) { btn.textContent = 'Scanne Markt...'; btn.disabled = true; }
+      
+      try {
+          let maxPages = 30; 
+          for(let p = 1; p <= maxPages; p++) {
+              if(btn) btn.textContent = `Scanne Seite ${p}...`;
+              let res = await GM_xmlhttpRequestPromise({
+                  method: 'GET',
+                  url: `https://tandro.de/api/marketplace/list?page=${p}&limit=50&sortBy=newest`,
+                  headers: { 'Authorization': `Bearer ${token}` }
+              });
+              
+              let data = JSON.parse(res.responseText);
+              
+              if (data.totalPages && p === 1) maxPages = Math.min(data.totalPages, 50);
+              
+              let items = data.avatars || data.items || data.data || [];
+              
+              if (!items || items.length === 0) {
+                  if (Array.isArray(data)) items = data;
+                  else {
+                      for (let key in data) {
+                          if (Array.isArray(data[key]) && key !== 'categories') { items = data[key]; break; }
+                      }
+                  }
+              }
+
+              allItems = allItems.concat(items);
+              if (!items || items.length < 10) break; 
+          }
+          
+          state.myListings = allItems.filter(i => {
+              let uId = String(i.authorid || i.userId || i.user_id || i.sellerId || i.seller_id || (i.user && i.user.id) || (i.seller && i.seller.id) || "");
+              return uId === String(myId);
+          });
+          
+          renderMyListings();
+          if(btn) { btn.textContent = '🔄 Angebote laden'; btn.disabled = false; }
+          
+          if (state.myListings.length > 0) {
+              showToast(`${state.myListings.length} eigene Angebote gefunden!`, 'success');
+          } else {
+              showToast(`Keine gefunden. Markt durchsucht (${allItems.length} Items).`, 'info');
+          }
+          
+      } catch(e) {
+          showToast('Fehler beim Laden des Marktes', 'error');
+          if(btn) { btn.textContent = '🔄 Angebote laden'; btn.disabled = false; }
+      }
+  }
+
+  async function deleteListing(id) {
+      let token = getToken();
+      if (!token) return;
+      
+      try {
+          await GM_xmlhttpRequestPromise({
+              method: 'DELETE',
+              url: `https://tandro.de/api/marketplace/${id}`,
+              headers: { 'Authorization': `Bearer ${token}` }
+          });
+          
+          state.myListings = state.myListings.filter(i => i.id !== id);
+          renderMyListings();
+          showToast('Angebot erfolgreich gelöscht!', 'success');
+      } catch(e) {
+          showToast('Fehler beim Löschen des Angebots.', 'error');
+      }
+  }
+
+  async function extendAllListings() {
+      if (!state.myListings || state.myListings.length === 0) {
+          return showToast('Keine Angebote geladen! Bitte zuerst scannen.', 'error');
+      }
+      let token = getToken();
+      if (!token) return showToast('Auth-Token nicht gefunden!', 'error');
+
+      const btn = document.getElementById('tm-extend-market');
+      if (btn) { btn.disabled = true; btn.textContent = 'Pushe...'; btn.style.opacity = '0.7'; }
+
+      let successCount = 0;
+      for (const item of state.myListings) {
+          try {
+              const res = await GM_xmlhttpRequestPromise({
+                  method: 'POST',
+                  url: `https://tandro.de/api/marketplace/extend/${item.id}`,
+                  headers: { 'Authorization': `Bearer ${token}` }
+              });
+              if (res.status >= 200 && res.status < 300) {
+                  successCount++;
+              }
+          } catch(e) {}
+          await new Promise(r => setTimeout(r, 350));
+      }
+
+      if (btn) { btn.disabled = false; btn.textContent = '🚀 Alle Pushen'; btn.style.opacity = '1'; }
+      
+      if (successCount > 0) {
+          showToast(`${successCount} Angebote erfolgreich gepusht!`, 'success');
+      } else {
+          showToast('Fehler beim Pushen der Angebote.', 'error');
+      }
   }
 
   function injectWebSocketInterceptor() {
@@ -211,12 +437,11 @@
         }
       });
 
-      // --- FETCH & XHR INTERCEPTOR FOR UPLOAD LEARNING & WARDROBE SYNC ---
       const origFetch = window.fetch;
       window.fetch = async function(...args) {
           const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url ? args[0].url : '');
           const opts = args[1] || {};
-
+          
           if (url.includes('/api/avatars/upload') && opts.method && opts.method.toUpperCase() === 'POST') {
               try {
                   const bodyObj = JSON.parse(opts.body);
@@ -224,28 +449,23 @@
                   let usePrefix = true;
                   for (let k in bodyObj) {
                       if (typeof bodyObj[k] === 'string' && bodyObj[k].length > 1000) {
-                          imgKey = k;
-                          usePrefix = bodyObj[k].startsWith('data:');
-                          bodyObj[k] = ""; // strip data to save template safely
-                          break;
+                          imgKey = k; usePrefix = bodyObj[k].startsWith('data:'); bodyObj[k] = ""; break;
                       }
                   }
-                  window.dispatchEvent(new CustomEvent('TndrHXLearnUpload', { detail: JSON.stringify({
-                      template: bodyObj, imgKey: imgKey, usePrefix: usePrefix
-                  })}));
+                  window.dispatchEvent(new CustomEvent('TndrHXLearnUpload', { detail: JSON.stringify({ template: bodyObj, imgKey: imgKey, usePrefix: usePrefix })}));
               } catch(e) {}
           }
 
-          const response = await origFetch.apply(this, args);
+          if (url.includes('/api/marketplace/sell') && opts.method && opts.method.toUpperCase() === 'POST') {
+              try { window.dispatchEvent(new CustomEvent('TndrHXLearnSell', { detail: opts.body })); } catch(e) {}
+          }
 
-          // Catch Wardrobe / Avatar List to populate Whitelist
+          const response = await origFetch.apply(this, args);
           if (url.includes('/api/avatars') && (!opts.method || opts.method.toUpperCase() === 'GET')) {
               try {
                   const clone = response.clone();
                   clone.json().then(data => {
-                      if (data && data.avatars) {
-                          window.dispatchEvent(new CustomEvent('TndrHXOwnAvatars', { detail: JSON.stringify(data.avatars) }));
-                      }
+                      if (data && data.avatars) window.dispatchEvent(new CustomEvent('TndrHXOwnAvatars', { detail: JSON.stringify(data.avatars) }));
                   }).catch(e => {});
               } catch(e) {}
           }
@@ -254,45 +474,34 @@
 
       const origOpen = XMLHttpRequest.prototype.open;
       const origSend = XMLHttpRequest.prototype.send;
-      XMLHttpRequest.prototype.open = function(method, url) {
-          this._url = url;
-          this._method = method;
-          return origOpen.apply(this, arguments);
-      };
+      XMLHttpRequest.prototype.open = function(method, url) { this._url = url; this._method = method; return origOpen.apply(this, arguments); };
       XMLHttpRequest.prototype.send = function(body) {
           if (this._url && this._url.includes('/api/avatars/upload') && this._method && this._method.toUpperCase() === 'POST' && typeof body === 'string') {
               try {
                   const bodyObj = JSON.parse(body);
-                  let imgKey = 'image';
-                  let usePrefix = true;
+                  let imgKey = 'image'; let usePrefix = true;
                   for (let k in bodyObj) {
-                      if (typeof bodyObj[k] === 'string' && bodyObj[k].length > 1000) {
-                          imgKey = k;
-                          usePrefix = bodyObj[k].startsWith('data:');
-                          bodyObj[k] = "";
-                          break;
-                      }
+                      if (typeof bodyObj[k] === 'string' && bodyObj[k].length > 1000) { imgKey = k; usePrefix = bodyObj[k].startsWith('data:'); bodyObj[k] = ""; break; }
                   }
-                  window.dispatchEvent(new CustomEvent('TndrHXLearnUpload', { detail: JSON.stringify({
-                      template: bodyObj, imgKey: imgKey, usePrefix: usePrefix
-                  })}));
+                  window.dispatchEvent(new CustomEvent('TndrHXLearnUpload', { detail: JSON.stringify({ template: bodyObj, imgKey: imgKey, usePrefix: usePrefix })}));
               } catch(e) {}
+          }
+
+          if (this._url && this._url.includes('/api/marketplace/sell') && this._method && this._method.toUpperCase() === 'POST' && typeof body === 'string') {
+              try { window.dispatchEvent(new CustomEvent('TndrHXLearnSell', { detail: body })); } catch(e) {}
           }
 
           this.addEventListener('load', function() {
               if (this._url && this._url.includes('/api/avatars') && this._method && this._method.toUpperCase() === 'GET') {
                   try {
                       const data = JSON.parse(this.responseText);
-                      if (data && data.avatars) {
-                          window.dispatchEvent(new CustomEvent('TndrHXOwnAvatars', { detail: JSON.stringify(data.avatars) }));
-                      }
+                      if (data && data.avatars) window.dispatchEvent(new CustomEvent('TndrHXOwnAvatars', { detail: JSON.stringify(data.avatars) }));
                   } catch(e) {}
               }
           });
           return origSend.apply(this, arguments);
       };
 
-      // --- WEBSOCKET BLOCKER & LOGGER ---
       const hasBlockedWord = (txt) => {
         if (!txt || typeof txt !== 'string') return false;
         return blockedWords.some(w => txt.toLowerCase().includes(w.toLowerCase()));
@@ -320,10 +529,8 @@
           if (obj.text !== undefined && hasBlockedWord(obj.text)) { obj.text = ''; modified = true; }
         }
 
-        for (const key in obj) {
-          if (typeof obj[key] === 'object') {
-            if (scrubData(obj[key])) modified = true;
-          }
+        for (const key in obj) { 
+          if (typeof obj[key] === 'object') { if (scrubData(obj[key])) modified = true; } 
         }
         return modified;
       };
@@ -333,20 +540,15 @@
           if (!eventDataString.startsWith('42')) return false;
           const parsed = JSON.parse(eventDataString.substring(2));
           if (!Array.isArray(parsed) || parsed.length < 2) return false;
-
+          
           const eventName = parsed[0];
           const eventData = parsed[1];
 
-          const eventsToTrackIn = ["updateChatLines", "existingUsers", "userListUpdate", "userJoinedUserList", "userChangedRoom", "newMessage", "joinRoom"];
-          if (eventsToTrackIn.includes(eventName)) {
-            window.dispatchEvent(new CustomEvent('TndrHXWSIntercept', {
-                detail: JSON.stringify({ direction: 'in', event: eventName, data: eventData })
-            }));
+          if (["updateChatLines", "existingUsers", "userListUpdate", "userJoinedUserList", "userChangedRoom", "newMessage", "joinRoom"].includes(eventName)) {
+            window.dispatchEvent(new CustomEvent('TndrHXWSIntercept', { detail: JSON.stringify({ direction: 'in', event: eventName, data: eventData }) }));
           }
 
-          if (scrubData(parsed[1])) {
-            return '42' + JSON.stringify(parsed);
-          }
+          if (scrubData(parsed[1])) return '42' + JSON.stringify(parsed);
         } catch (e) {}
         return false;
       }
@@ -354,8 +556,7 @@
       const OrigWebSocket = window.WebSocket;
       window.WebSocket = function(...args) {
         const ws = new OrigWebSocket(...args);
-        window.__tndrhxWS = ws;
-
+        window.__tndrhxWS = ws; 
         ws.addEventListener('open', () => window.dispatchEvent(new CustomEvent('TndrHXWSState', {detail: 'open'})));
         ws.addEventListener('close', () => window.dispatchEvent(new CustomEvent('TndrHXWSState', {detail: 'close'})));
 
@@ -368,13 +569,8 @@
           if (typeof data === 'string' && data.startsWith('42')) {
             try {
               const parsed = JSON.parse(data.substring(2));
-              const evName = parsed[0];
-              const evData = parsed[1];
-              const eventsToTrackOut = ["sendChatLine", "newMessage", "joinRoom"];
-              if (eventsToTrackOut.includes(evName)) {
-                window.dispatchEvent(new CustomEvent('TndrHXWSIntercept', {
-                    detail: JSON.stringify({ direction: 'out', event: evName, data: evData })
-                }));
+              if (["sendChatLine", "newMessage", "joinRoom"].includes(parsed[0])) {
+                window.dispatchEvent(new CustomEvent('TndrHXWSIntercept', { detail: JSON.stringify({ direction: 'out', event: parsed[0], data: parsed[1] }) }));
               }
             } catch(e) {}
           }
@@ -386,10 +582,8 @@
             const wrapped = function(event) {
               if (typeof event.data === 'string' && event.data.startsWith('42')) {
                 const result = processAndCheckDrop(event.data);
-                if (result === true) return;
-                if (typeof result === 'string') {
-                  Object.defineProperty(event, 'data', { value: result, writable: false });
-                }
+                if (result === true) return; 
+                if (typeof result === 'string') Object.defineProperty(event, 'data', { value: result, writable: false });
               }
               return listener.call(this, event);
             };
@@ -424,25 +618,18 @@
           },
           get: function() { return customOnMessage; }
         });
-
         return ws;
       };
-
     }})();`;
-
     if (document.head || document.documentElement) {
-      (document.head || document.documentElement).appendChild(script);
-      script.remove();
+      (document.head || document.documentElement).appendChild(script); script.remove();
     }
   }
 
   function handleSeenEmojiInDOM(img) {
-    if (!state.emojiStealerEnabled) return;
     const url = img.src;
 
-    // 1. [+] Button direkt in den Chat injizieren (Idee aus der Roadmap)
     if (img.parentNode && !img.parentNode.classList.contains('tm-emoji-wrapper')) {
-        // Prüfen, ob wir das Emoji schon haben
         if (!state.localEmojis.some(em => em.dataUrl === url)) {
             const wrapper = document.createElement('span');
             wrapper.className = 'tm-emoji-wrapper';
@@ -452,36 +639,27 @@
             btn.className = 'tm-steal-btn-inline';
             btn.textContent = '+';
             btn.title = 'Emoji klauen';
-            // Button ist standardmäßig unsichtbar und wird beim Hovern sichtbar
             btn.style.cssText = 'position:absolute; top:-6px; right:-8px; background:var(--tm-primary); color:white; border:none; border-radius:50%; width:18px; height:18px; font-size:14px; line-height:18px; font-weight:bold; cursor:pointer; display:flex; align-items:center; justify-content:center; opacity:0; transition:opacity 0.2s; z-index:10; box-shadow: 0 2px 5px rgba(0,0,0,0.5); padding:0;';
 
             wrapper.onmouseenter = () => btn.style.opacity = '1';
             wrapper.onmouseleave = () => btn.style.opacity = '0';
 
             btn.onclick = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
+                e.preventDefault(); e.stopPropagation();
                 addLocalEmoji(url, "geklaut_" + Math.floor(Math.random()*10000));
-
-                // Button visuelles Feedback geben
-                btn.style.background = '#3ba55c';
-                btn.textContent = '✓';
+                btn.style.background = '#3ba55c'; btn.textContent = '✓';
                 showToast('Gestohlen! 🥷', 'success');
                 setTimeout(() => { if(btn) btn.remove(); }, 2000);
-
-                // Direkt aus "Zuletzt gesehen" Liste löschen, damit es sauber aussieht
                 state.seenEmojis = state.seenEmojis.filter(e => e.url !== url);
                 renderEmojiDieb();
             };
 
-            // HTML Element wrappen
             img.parentNode.insertBefore(wrapper, img);
             wrapper.appendChild(img);
             wrapper.appendChild(btn);
         }
     }
 
-    // 2. Ans Panel (Diebesgut Tab) schicken
     if (!state.seenEmojis.some(em => em.url === url) && !state.localEmojis.some(em => em.dataUrl === url)) {
         let sender = 'Unbekannt';
         const msgEl = img.closest('[data-user-id], .message, .chat-message');
@@ -489,7 +667,6 @@
             const nameEl = msgEl.querySelector('.username, .name, .sender');
             if (nameEl) sender = nameEl.textContent.trim();
         }
-
         state.seenEmojis.unshift({ url: url, sender: sender });
         if (state.seenEmojis.length > 50) state.seenEmojis.pop();
         if (state.activeTab === 'emojis') renderEmojiDieb();
@@ -497,9 +674,9 @@
   }
 
   function addAvatarToUI(url) {
-    if (uploadedAvatars.has(url)) return;
+    if (uploadedAvatars.has(url)) return; 
     if (seenAvatars.has(url)) return;
-
+    
     seenAvatars.add(url);
     if (seenAvatars.size > 500) { const it = seenAvatars.values(); seenAvatars.delete(it.next().value); }
 
@@ -508,14 +685,12 @@
 
     const img = document.createElement('img');
     img.src = url;
-    Object.assign(img.style, { width: '64px', height: '64px', objectFit: 'cover', borderRadius: '6px', border: '1px solid var(--tm-border)', cursor: 'pointer', transition: 'transform 0.1s' });
+    Object.assign(img.style, { width: '48px', height: '48px', objectFit: 'cover', borderRadius: '6px', border: '1px solid var(--tm-border)', cursor: 'pointer', transition: 'transform 0.1s' });
     img.title = "Klicken zum manuellen Speichern in deinem Vault (EXIF-Clean)";
     img.onmouseenter = () => img.style.transform = 'scale(1.05)';
     img.onmouseleave = () => img.style.transform = 'scale(1)';
 
-    img.addEventListener('click', () => {
-       processAndUploadAvatar(url, true);
-    });
+    img.addEventListener('click', () => { processAndUploadAvatar(url, true); });
     avatarList.appendChild(img);
   }
 
@@ -523,16 +698,16 @@
     const observer = new MutationObserver(mutations => {
       for (const m of mutations) {
         for (const node of m.addedNodes) {
-          if (node.nodeType !== 1) continue;
+          if (node.nodeType !== 1) continue; 
           if (node.id === 'tm-emoji-panel' || node.closest('#tm-emoji-panel')) continue;
-
+          
           if (node.tagName === 'IMG') {
               if (node.src.startsWith(avatarHost)) addAvatarToUI(node.src);
               if (node.src.startsWith(emojiHost)) handleSeenEmojiInDOM(node);
           }
           else if (node.querySelectorAll) {
-            node.querySelectorAll('img').forEach(img => {
-                if (img.src.startsWith(avatarHost)) addAvatarToUI(img.src);
+            node.querySelectorAll('img').forEach(img => { 
+                if (img.src.startsWith(avatarHost)) addAvatarToUI(img.src); 
                 if (img.src.startsWith(emojiHost)) handleSeenEmojiInDOM(img);
             });
           }
@@ -540,18 +715,13 @@
       }
     });
     observer.observe(document.body, { childList: true, subtree: true });
-
-    // Initialen Scan beim Laden durchführen
-    document.querySelectorAll('img').forEach(img => {
-        if (img.src.startsWith(avatarHost)) addAvatarToUI(img.src);
+    document.querySelectorAll('img').forEach(img => { 
+        if (img.src.startsWith(avatarHost)) addAvatarToUI(img.src); 
         if (img.src.startsWith(emojiHost)) handleSeenEmojiInDOM(img);
     });
   }
 
-  window.addEventListener('TndrHXWSState', (e) => {
-      state.wsConnected = (e.detail === 'open');
-      updateStatus();
-  });
+  window.addEventListener('TndrHXWSState', (e) => { state.wsConnected = (e.detail === 'open'); updateStatus(); });
 
   window.addEventListener('TndrHXWSIntercept', (e) => {
     let payload;
@@ -561,21 +731,15 @@
         if (payload.event === 'existingUsers' && payload.data?.myself) {
             state.myUserId = String(payload.data.myself.id || payload.data.myself.userId);
             state.currentRoomId = payload.data.myself.currentRoomId;
-            if (payload.data.myself.avatarUrl) markAvatarAsOwned(payload.data.myself.avatarUrl);
+            if (payload.data.myself.avatarUrl) markAvatarAsOwned(payload.data.myself.avatarUrl); 
             updateStatus();
         }
         if (payload.event === 'userJoinedUserList' && payload.data) {
-            if (String(payload.data.id) === state.myUserId) {
-                state.currentRoomId = payload.data.currentRoomId;
-                updateStatus();
-            }
+            if (String(payload.data.id) === state.myUserId) { state.currentRoomId = payload.data.currentRoomId; updateStatus(); }
         }
     }
     if (payload.direction === 'out') {
-        if (payload.event === 'joinRoom' && payload.data?.room) {
-            state.currentRoomId = payload.data.room;
-            updateStatus();
-        }
+        if (payload.event === 'joinRoom' && payload.data?.room) { state.currentRoomId = payload.data.room; updateStatus(); }
         if (['newMessage', 'sendChatLine'].includes(payload.event) && payload.data) {
             if (payload.data.userId) state.myUserId = String(payload.data.userId);
             if (payload.data.room) state.currentRoomId = payload.data.room;
@@ -590,8 +754,7 @@
           const id = String(u.userId || u.id);
           const name = u.username || u.name || u.nickname || u.senderName;
           if (id && id !== 'undefined' && name && state.knownUsers[id] !== name) {
-            state.knownUsers[id] = name;
-            changed = true;
+            state.knownUsers[id] = name; changed = true;
           }
         };
         if (Array.isArray(payload.data)) payload.data.forEach(extract);
@@ -605,18 +768,14 @@
 
     apiCall('/ws', 'POST', { direction: payload.direction, event: payload.event, data: payload.data, myId: state.myUserId })
     .then(res => {
-        state.backendConnected = true;
-        updateStatus();
+        state.backendConnected = true; updateStatus();
         if (res && res.actions) {
             res.actions.forEach(act => {
                 if (act.type === 'play_alert') playAlertSound();
                 if (act.type === 'send_message') setTimeout(() => sendText(act.text), 1500);
             });
         }
-    }).catch(() => {
-        state.backendConnected = false;
-        updateStatus();
-    });
+    }).catch(() => { state.backendConnected = false; updateStatus(); });
   });
 
   function playAlertSound() {
@@ -625,14 +784,11 @@
       if (audioCtx.state === 'suspended') audioCtx.resume();
       const osc = audioCtx.createOscillator();
       const gain = audioCtx.createGain();
-      osc.connect(gain);
-      gain.connect(audioCtx.destination);
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(880, audioCtx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(440, audioCtx.currentTime + 0.3);
+      osc.connect(gain); gain.connect(audioCtx.destination);
+      osc.type = 'sine'; osc.frequency.setValueAtTime(880, audioCtx.currentTime); 
+      osc.frequency.exponentialRampToValueAtTime(440, audioCtx.currentTime + 0.3); 
       gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
-      osc.start();
-      gain.gain.exponentialRampToValueAtTime(0.00001, audioCtx.currentTime + 0.3);
+      osc.start(); gain.gain.exponentialRampToValueAtTime(0.00001, audioCtx.currentTime + 0.3);
       osc.stop(audioCtx.currentTime + 0.3);
     } catch(e) {}
   }
@@ -641,11 +797,7 @@
     return new Promise((resolve, reject) => {
       if (file.size > 5 * 1024 * 1024) return reject(new Error("Datei zu groß (Max 5MB)"));
       if (file.type === 'image/gif') {
-        const reader = new FileReader();
-        reader.onload = e => resolve(e.target.result);
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-        return;
+        const reader = new FileReader(); reader.onload = e => resolve(e.target.result); reader.onerror = reject; reader.readAsDataURL(file); return;
       }
       const reader = new FileReader();
       reader.onload = (e) => {
@@ -653,17 +805,15 @@
         img.onload = () => {
           const canvas = document.createElement('canvas');
           let width = img.width, height = img.height;
-          if (width > height) { if (width > maxSize) { height *= maxSize / width; width = maxSize; } }
+          if (width > height) { if (width > maxSize) { height *= maxSize / width; width = maxSize; } } 
           else { if (height > maxSize) { width *= maxSize / height; height = maxSize; } }
           canvas.width = width; canvas.height = height;
           canvas.getContext('2d').drawImage(img, 0, 0, width, height);
           resolve(canvas.toDataURL('image/webp', 0.8));
         };
-        img.onerror = reject;
-        img.src = e.target.result;
+        img.onerror = reject; img.src = e.target.result;
       };
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
+      reader.onerror = reject; reader.readAsDataURL(file);
     });
   }
 
@@ -672,14 +822,12 @@
     const id = String(state.nextLocalId++);
     const cleanName = name.replace(/[^a-zA-Z0-9_-]/g, '_').toLowerCase() || `emoji_${id}`;
     const payload = { id, name: cleanName, dataUrl };
-    state.localEmojis.push(payload);
-    renderGallery();
+    state.localEmojis.push(payload); renderGallery();
     apiCall('/action', 'POST', { action: 'add_emoji', payload });
   }
 
   function removeLocalEmoji(id) {
-    state.localEmojis = state.localEmojis.filter(e => String(e.id) !== String(id));
-    renderGallery();
+    state.localEmojis = state.localEmojis.filter(e => String(e.id) !== String(id)); renderGallery();
     apiCall('/action', 'POST', { action: 'remove_emoji', payload: id });
   }
 
@@ -688,50 +836,28 @@
     if (!id || !state.wsConnected || !state.myUserId || !state.currentRoomId) return showToast('Fehler: Nicht verbunden!', 'error');
     const emoji = state.localEmojis.find(e => String(e.id) === id);
     if (!emoji) return false;
-
     const payload = {
-      id: `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
-      room: parseInt(state.currentRoomId),
-      userId: parseInt(state.myUserId),
-      message: `:${id}: `,
-      speechBubbleText: '',
-      mentions: [],
-      replyTo: null,
-      isEmoji: true,
-      isGif: false,
-      emojiUrl: emoji.dataUrl
+      id: `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`, room: parseInt(state.currentRoomId), userId: parseInt(state.myUserId), 
+      message: `:${id}: `, speechBubbleText: '', mentions: [], replyTo: null, isEmoji: true, isGif: false, emojiUrl: emoji.dataUrl
     };
-
     emitWS('42' + JSON.stringify(['newMessage', payload]));
     showToast(`Gesendet :${id}:`, 'success');
   }
 
   function sendText(text) {
     if (!text || !state.wsConnected || !state.myUserId || !state.currentRoomId) return false;
-
     const payload = {
-      id: `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
-      room: parseInt(state.currentRoomId),
-      userId: parseInt(state.myUserId),
-      message: text,
-      speechBubbleText: '',
-      mentions: [],
-      replyTo: null,
-      isEmoji: false,
-      isGif: false
+      id: `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`, room: parseInt(state.currentRoomId), userId: parseInt(state.myUserId), 
+      message: text, speechBubbleText: '', mentions: [], replyTo: null, isEmoji: false, isGif: false
     };
-
     emitWS('42' + JSON.stringify(['newMessage', payload]));
   }
 
   function showToast(message, type = 'info') {
     if (!ui.toastContainer) {
-      ui.toastContainer = document.createElement('div');
-      ui.toastContainer.className = 'tm-toast-container';
-      document.body.appendChild(ui.toastContainer);
+      ui.toastContainer = document.createElement('div'); ui.toastContainer.className = 'tm-toast-container'; document.body.appendChild(ui.toastContainer);
     }
-    const toast = document.createElement('div');
-    toast.className = `tm-toast tm-toast-${type}`; toast.textContent = message;
+    const toast = document.createElement('div'); toast.className = `tm-toast tm-toast-${type}`; toast.textContent = message;
     ui.toastContainer.appendChild(toast);
     void toast.offsetWidth;
     toast.style.opacity = '1'; toast.style.transform = 'translateY(0)';
@@ -744,36 +870,133 @@
     ui.status.textContent = state.wsConnected ? `🟢 ${room}` : '🔴 Tandro Offline';
     ui.backendStatus.textContent = state.backendConnected ? '🐍 Backend OK' : '🐍 Backend Offline';
     ui.backendStatus.style.color = state.backendConnected ? '#3ba55c' : '#ed4245';
+    
+    const warningBanner = document.getElementById('tm-backend-warning');
+    if (warningBanner) {
+      warningBanner.style.display = state.backendConnected ? 'none' : 'block';
+    }
   }
 
   function startHeartbeat() {
     setInterval(() => {
       apiCall('/ping', 'GET')
         .then(async () => {
-          if (!state.backendConnected) {
-            state.backendConnected = true;
-            updateStatus();
-            showToast("Verbindung zum Backend hergestellt!", "success");
-          }
+          if (!state.backendConnected) { state.backendConnected = true; updateStatus(); showToast("Verbindung zum Backend hergestellt!", "success"); }
           try {
               const db = await apiCall('/state', 'GET');
               Object.assign(state, db);
               renderGallery(); renderMacros(); renderBlocks();
-
-              const diebContainer = document.getElementById('tm-diebesgut-wrapper');
-              if (diebContainer) diebContainer.style.display = state.emojiStealerEnabled ? 'block' : 'none';
-
               window.dispatchEvent(new CustomEvent('TndrHXSyncBlocks', { detail: { users: state.blockedUsers, words: state.blockedWords } }));
           } catch(e) {}
         })
         .catch(() => {
-          if (state.backendConnected) {
-            state.backendConnected = false;
-            updateStatus();
-            showToast("Warnung: Verbindung zum Backend verloren!", "error");
-          }
+          if (state.backendConnected) { state.backendConnected = false; updateStatus(); showToast("Warnung: Verbindung zum Backend verloren!", "error"); }
         });
     }, 4000);
+  }
+
+  function escapeHtml(text) { return (text||'').toString().replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+
+  function renderEmojiDieb() {
+    const container = document.getElementById('tm-diebesgut-container');
+    const list = document.getElementById('tm-diebesgut');
+    if (!container || !list) return;
+    if (state.seenEmojis.length === 0) { container.style.display = 'none'; return; }
+    container.style.display = 'flex';
+    list.innerHTML = '';
+    
+    for (const em of state.seenEmojis) {
+      const wrap = document.createElement('div');
+      wrap.style.cssText = 'min-width:48px;height:48px;position:relative;background:rgba(0,0,0,0.3);border-radius:6px;cursor:pointer;flex-shrink:0;border:1px solid rgba(255,255,255,0.1);';
+      wrap.title = "Emoji klauen (von: " + escapeHtml(em.sender) + ")";
+      const img = document.createElement('img'); img.src = em.url; img.style.cssText = 'width:100%;height:100%;object-fit:contain;border-radius:6px;'; wrap.appendChild(img);
+      const badge = document.createElement('div'); badge.textContent = '+'; badge.style.cssText = 'position:absolute;bottom:-4px;right:-4px;background:var(--tm-primary);color:white;border-radius:50%;width:16px;height:16px;font-size:12px;display:flex;align-items:center;justify-content:center;font-weight:bold;'; wrap.appendChild(badge);
+      wrap.onclick = () => { addLocalEmoji(em.url, "geklaut_" + Math.floor(Math.random()*1000)); state.seenEmojis = state.seenEmojis.filter(e => e.url !== em.url); renderEmojiDieb(); showToast('Gestohlen! 🥷', 'success'); };
+      list.appendChild(wrap);
+    }
+  }
+
+  function renderGallery() {
+    if (!ui.gallery) return;
+    const term = state.searchTerm.toLowerCase();
+    const emojis = state.localEmojis.filter(e => String(e.id).includes(term) || (e.name && e.name.toLowerCase().includes(term)));
+    ui.gallery.innerHTML = '';
+    
+    if (state.localEmojis.length === 0) {
+      ui.gallery.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:30px;opacity:0.5;">✨ Ziehe Bilder hierher</div>'; return;
+    }
+    
+    for (const emoji of emojis) {
+      const card = document.createElement('div'); card.className = 'tm-card'; card.title = `Name: ${escapeHtml(emoji.name)}\nID: ${escapeHtml(emoji.id)}`;
+      card.innerHTML = `
+        <div class="tm-card-img"><img src="${emoji.dataUrl}" loading="lazy"></div>
+        <div style="font-size:11px;opacity:0.8;text-align:center;font-weight:500;overflow:hidden;text-overflow:ellipsis;">:${escapeHtml(emoji.id)}:</div>
+        <div style="display:flex;gap:4px;">
+          <button class="tm-btn tm-btn-primary tm-send-btn" style="flex:1;padding:4px;font-size:12px;">📤</button>
+          <button class="tm-btn tm-btn-danger tm-del-btn" style="flex:1;padding:4px;font-size:12px;">🗑️</button>
+        </div>`;
+      card.addEventListener('click', () => sendEmoji(emoji.id));
+      card.querySelector('.tm-send-btn').onclick = (e) => { e.stopPropagation(); sendEmoji(emoji.id); };
+      const delBtn = card.querySelector('.tm-del-btn');
+      delBtn.onclick = (e) => {
+        e.stopPropagation();
+        if (delBtn.dataset.c === '1') removeLocalEmoji(emoji.id);
+        else { delBtn.dataset.c = '1'; delBtn.textContent = '?'; setTimeout(() => { if (card.contains(delBtn)) { delBtn.dataset.c = '0'; delBtn.textContent = '🗑️'; } }, 2000); }
+      };
+      ui.gallery.appendChild(card);
+    }
+  }
+
+  function renderOwnAvatars() {
+      const list = document.getElementById('tm-own-avatar-list');
+      if (!list) return;
+      list.innerHTML = '';
+      if (!state.ownAvatars || state.ownAvatars.length === 0) {
+          list.innerHTML = '<div style="opacity:0.5;font-size:11px;padding:4px;">Öffne deinen Kleiderschrank im Chat, um deine Avatare hier zu laden.</div>';
+          return;
+      }
+      
+      state.ownAvatars.forEach(av => {
+          if(!av.url) return;
+          const img = document.createElement('img');
+          img.src = av.url;
+          Object.assign(img.style, { width: '48px', height: '48px', objectFit: 'cover', borderRadius: '6px', border: '1px solid var(--tm-border)', cursor: 'pointer', transition: 'transform 0.1s' });
+          img.title = "Klicken zum Verkauf auf dem Marktplatz";
+          img.onmouseenter = () => img.style.transform = 'scale(1.05)';
+          img.onmouseleave = () => img.style.transform = 'scale(1)';
+          img.addEventListener('click', () => { sellAvatar(av); });
+          list.appendChild(img);
+      });
+  }
+
+  function renderMyListings() {
+      const list = document.getElementById('tm-market-listings');
+      if (!list) return;
+      list.innerHTML = '';
+      if (!state.myListings || state.myListings.length === 0) {
+          list.innerHTML = '<div style="opacity:0.5;font-size:11px;padding:4px;">Keine aktiven Angebote gefunden oder noch nicht geladen.</div>';
+          return;
+      }
+      state.myListings.forEach(item => {
+          const id = item.id;
+          const price = item.price || item.costs || item.amount || "?";
+          const imgUrl = item.watermarkedurl || item.url || (item.avatar && item.avatar.url) || (item.useravatar && item.useravatar.url) || item.image || "";
+          
+          const div = document.createElement('div');
+          div.style.cssText = 'display:flex;align-items:center;justify-content:space-between;background:rgba(0,0,0,0.2);padding:4px 8px;border-radius:6px;margin-bottom:4px;border:1px solid rgba(255,255,255,0.05);';
+          
+          const imgHtml = imgUrl ? '<img src="' + escapeHtml(imgUrl) + '" style="width:32px;height:32px;border-radius:4px;object-fit:cover;">' : '<div style="width:32px;height:32px;background:#333;border-radius:4px;"></div>';
+          
+          div.innerHTML = `
+              <div style="display:flex;align-items:center;gap:8px;">
+                  ${imgHtml}
+                  <span style="font-size:12px;font-weight:bold;color:#3ba55c;">${escapeHtml(price)} AP</span>
+              </div>
+              <button class="tm-btn tm-btn-danger" style="padding:4px 8px;font-size:11px;">Entfernen</button>
+          `;
+          div.querySelector('button').onclick = () => deleteListing(id);
+          list.appendChild(div);
+      });
   }
 
   function injectStyles() {
@@ -809,63 +1032,10 @@
     document.head.appendChild(styleSheet);
   }
 
-  function escapeHtml(text) { return (text||'').toString().replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
-
-  function renderEmojiDieb() {
-    const container = document.getElementById('tm-diebesgut-container');
-    const list = document.getElementById('tm-diebesgut');
-    if (!container || !list) return;
-    if (state.seenEmojis.length === 0 || !state.emojiStealerEnabled) { container.style.display = 'none'; return; }
-    container.style.display = 'flex';
-    list.innerHTML = '';
-
-    for (const em of state.seenEmojis) {
-      const wrap = document.createElement('div');
-      wrap.style.cssText = 'min-width:48px;height:48px;position:relative;background:rgba(0,0,0,0.3);border-radius:6px;cursor:pointer;flex-shrink:0;border:1px solid rgba(255,255,255,0.1);';
-      wrap.title = "Emoji klauen (von: " + escapeHtml(em.sender) + ")";
-      const img = document.createElement('img'); img.src = em.url; img.style.cssText = 'width:100%;height:100%;object-fit:contain;border-radius:6px;'; wrap.appendChild(img);
-      const badge = document.createElement('div'); badge.textContent = '+'; badge.style.cssText = 'position:absolute;bottom:-4px;right:-4px;background:var(--tm-primary);color:white;border-radius:50%;width:16px;height:16px;font-size:12px;display:flex;align-items:center;justify-content:center;font-weight:bold;'; wrap.appendChild(badge);
-      wrap.onclick = () => { addLocalEmoji(em.url, "geklaut_" + Math.floor(Math.random()*1000)); state.seenEmojis = state.seenEmojis.filter(e => e.url !== em.url); renderEmojiDieb(); showToast('Gestohlen! 🥷', 'success'); };
-      list.appendChild(wrap);
-    }
-  }
-
-  function renderGallery() {
-    if (!ui.gallery) return;
-    const term = state.searchTerm.toLowerCase();
-    const emojis = state.localEmojis.filter(e => String(e.id).includes(term) || (e.name && e.name.toLowerCase().includes(term)));
-    ui.gallery.innerHTML = '';
-
-    if (state.localEmojis.length === 0) {
-      ui.gallery.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:30px;opacity:0.5;">✨ Ziehe Bilder hierher</div>'; return;
-    }
-
-    for (const emoji of emojis) {
-      const card = document.createElement('div'); card.className = 'tm-card'; card.title = `Name: ${escapeHtml(emoji.name)}\nID: ${escapeHtml(emoji.id)}`;
-      card.innerHTML = `
-        <div class="tm-card-img"><img src="${emoji.dataUrl}" loading="lazy"></div>
-        <div style="font-size:11px;opacity:0.8;text-align:center;font-weight:500;overflow:hidden;text-overflow:ellipsis;">:${escapeHtml(emoji.id)}:</div>
-        <div style="display:flex;gap:4px;">
-          <button class="tm-btn tm-btn-primary tm-send-btn" style="flex:1;padding:4px;font-size:12px;">📤</button>
-          <button class="tm-btn tm-btn-danger tm-del-btn" style="flex:1;padding:4px;font-size:12px;">🗑️</button>
-        </div>`;
-      card.addEventListener('click', () => sendEmoji(emoji.id));
-      card.querySelector('.tm-send-btn').onclick = (e) => { e.stopPropagation(); sendEmoji(emoji.id); };
-      const delBtn = card.querySelector('.tm-del-btn');
-      delBtn.onclick = (e) => {
-        e.stopPropagation();
-        if (delBtn.dataset.c === '1') removeLocalEmoji(emoji.id);
-        else { delBtn.dataset.c = '1'; delBtn.textContent = '?'; setTimeout(() => { if (card.contains(delBtn)) { delBtn.dataset.c = '0'; delBtn.textContent = '🗑️'; } }, 2000); }
-      };
-      ui.gallery.appendChild(card);
-    }
-  }
-
   function renderMacros() {
     const list = document.getElementById('tm-macro-list'); if (!list) return;
     list.innerHTML = '';
     if (state.macros.length === 0) { list.innerHTML = '<div style="opacity:0.5;text-align:center;padding:20px;">Keine Makros gespeichert.</div>'; return; }
-
     for (const m of state.macros) {
       const card = document.createElement('div'); card.style.cssText = 'background:var(--tm-surface);border:1px solid var(--tm-border);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:6px;';
       card.innerHTML = `<div style="font-weight:bold;color:var(--tm-primary);">${escapeHtml(m.title)}</div><div style="font-size:11px;opacity:0.8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:rgba(0,0,0,0.2);padding:4px;border-radius:4px;">${escapeHtml(m.text)}</div>`;
@@ -882,7 +1052,6 @@
     const list = document.getElementById('tm-block-list'); if (!list) return;
     list.innerHTML = '';
     if (state.blockedUsers.length === 0 && state.blockedWords.length === 0) { list.innerHTML = '<div style="opacity:0.5;text-align:center;padding:20px;">Die Blockliste ist leer.</div>'; return; }
-
     const createItem = (type, value) => {
       const div = document.createElement('div'); div.style.cssText = 'display:flex;justify-content:space-between;align-items:center;background:var(--tm-surface);padding:8px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.05);margin-bottom:4px;';
       let disp = escapeHtml(value); if (type === 'User' && state.knownUsers[value]) disp = `${escapeHtml(state.knownUsers[value])} (${escapeHtml(value)})`;
@@ -929,7 +1098,7 @@
     const panel = document.createElement('div');
     panel.id = 'tm-emoji-panel';
     let { left, top } = state.panelPos;
-    if (typeof left === 'number' && typeof top === 'number') { panel.style.left = Math.max(0, Math.min(left, window.innerWidth - 100)) + 'px'; panel.style.top = Math.max(0, Math.min(top, window.innerHeight - 100)) + 'px'; }
+    if (typeof left === 'number' && typeof top === 'number') { panel.style.left = Math.max(0, Math.min(left, window.innerWidth - 100)) + 'px'; panel.style.top = Math.max(0, Math.min(top, window.innerHeight - 100)) + 'px'; } 
     else { panel.style.right = '20px'; panel.style.bottom = '20px'; }
     panel.style.width = Math.max(280, state.panelSize.width) + 'px'; panel.style.height = Math.max(300, state.panelSize.height) + 'px';
 
@@ -943,15 +1112,19 @@
         </div>
         <button id="tm-minimize" class="tm-btn tm-btn-outline" style="padding:4px 8px;">−</button>
       </div>
+      <div id="tm-backend-warning" style="display:none; background:var(--tm-danger); color:white; padding:6px; font-size:11px; text-align:center;">
+        ⚠️ Python-Backend fehlt! <a href="https://github.com/Asriel-AC/Tndr-HX/blob/main/Tndr-HX_backend.py" target="_blank" style="color:white; text-decoration:underline; font-weight:bold;">Hier herunterladen</a>
+      </div>
       <div class="tm-tabs">
         <div class="tm-tab active" data-tab="emojis">🖼️ Emojis</div>
-        <div class="tm-tab" data-tab="avatars">🧑 Avatare</div>
+        <div class="tm-tab" data-tab="avatars">🥷 Klauen</div>
+        <div class="tm-tab" data-tab="market">💰 Markt</div>
         <div class="tm-tab" data-tab="macros">📝 Makros</div>
         <div class="tm-tab" data-tab="blocks">🚷 Block+</div>
       </div>
 
       <div id="tab-emojis" class="tm-tab-content active">
-        <div id="tm-diebesgut-wrapper" style="display:${state.emojiStealerEnabled ? 'block' : 'none'};">
+        <div id="tm-diebesgut-wrapper">
             <div id="tm-diebesgut-container" style="display:none; flex-direction:column; gap:6px; margin-bottom:12px; background:rgba(88,101,242,0.1); border:1px solid var(--tm-border); padding:8px; border-radius:8px;">
               <div style="display:flex;justify-content:space-between;align-items:center;">
                 <div style="font-weight:600;color:var(--tm-primary);font-size:11px;">🥷 Emoji-Dieb (Zuletzt entdeckt)</div>
@@ -975,9 +1148,38 @@
       </div>
 
       <div id="tab-avatars" class="tm-tab-content">
-        <div style="font-weight:600;color:var(--tm-primary);margin-bottom:8px;">🖼️ Klicke auf einen Avatar zum Speichern im eigenen Vault</div>
-        <div style="font-size:11px;color:var(--tm-text-muted);margin-bottom:12px;">Um einen gefundenen Avatar direkt in deinen Vault zu klauen, lade bitte <b>einmalig einen Avatar manuell</b> über das Spiel hoch. Dadurch lernt das Skript das genaue Datenformat. Klicke dann einfach auf die Avatare hier.</div>
-        <div id="tm-avatar-list" style="display:flex;flex-wrap:wrap;gap:8px;overflow-y:auto;flex:1;align-content:start;"></div>
+        <div style="font-weight:600;color:var(--tm-primary);margin-bottom:8px;">🥷 Geklaute Avatare (In Vault speichern)</div>
+        <div style="font-size:11px;color:var(--tm-text-muted);margin-bottom:8px;">Einmalig einen manuell hochladen, damit das Skript die API lernt. Klicke dann hier auf gefundene Avatare.</div>
+        <div id="tm-avatar-list" style="display:flex;flex-wrap:wrap;gap:8px;flex:1;min-height:0;overflow-y:auto;align-content:start;margin-bottom:4px;background:rgba(0,0,0,0.2);padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.05);"></div>
+      </div>
+
+      <div id="tab-market" class="tm-tab-content">
+        <div style="background:rgba(0,0,0,0.2);padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.05);margin-bottom:14px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+              <div style="font-weight:600;color:#3ba55c;">💰 Schnellverkauf</div>
+              <div style="display:flex;align-items:center;gap:6px;">
+                <span style="font-size:11px;">Preis:</span>
+                <input type="number" id="tm-sell-price" class="tm-input" value="10" style="width:60px;padding:4px;height:24px;text-align:center;">
+              </div>
+            </div>
+            <button id="tm-sell-all" class="tm-btn tm-btn-primary" style="width:100%;margin-bottom:8px;">🛍️ Alle eigenen Avatare verkaufen</button>
+            <div id="tm-own-avatar-list" style="display:flex;flex-wrap:wrap;gap:8px;overflow-y:auto;max-height:120px;align-content:start;">
+               <div style="opacity:0.5;font-size:11px;padding:4px;">Öffne deinen Kleiderschrank im Chat, um deine Avatare hier zu laden.</div>
+            </div>
+        </div>
+
+        <div style="display:flex;flex-direction:column;flex:1;min-height:0;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                <div style="font-weight:600;color:var(--tm-primary);">📈 Meine aktiven Angebote</div>
+                <div style="display:flex;gap:4px;">
+                  <button id="tm-extend-market" class="tm-btn tm-btn-primary" style="padding:2px 8px;font-size:11px;">🚀 Alle Pushen</button>
+                  <button id="tm-load-market" class="tm-btn tm-btn-outline" style="padding:2px 8px;font-size:11px;">🔄 Laden</button>
+                </div>
+            </div>
+            <div id="tm-market-listings" style="flex:1;overflow-y:auto;background:rgba(0,0,0,0.2);border-radius:8px;padding:8px;border:1px solid rgba(255,255,255,0.05);">
+                <div style="opacity:0.5;font-size:11px;padding:4px;text-align:center;">Klicke auf 'Laden', um den Markt zu scannen.</div>
+            </div>
+        </div>
       </div>
 
       <div id="tab-macros" class="tm-tab-content">
@@ -1019,7 +1221,43 @@
         if (state.activeTab === 'emojis') { renderEmojiDieb(); renderGallery(); }
         if (state.activeTab === 'macros') renderMacros();
         if (state.activeTab === 'blocks') { renderUserDropdown(); renderBlocks(); }
+        if (state.activeTab === 'market') { renderOwnAvatars(); renderMyListings(); }
       });
+    });
+
+    panel.querySelector('#tm-load-market').addEventListener('click', fetchMyListings);
+    panel.querySelector('#tm-extend-market').addEventListener('click', extendAllListings);
+
+    panel.querySelector('#tm-sell-all').addEventListener('click', async (e) => {
+        if (!state.ownAvatars || state.ownAvatars.length === 0) return showToast('Kleiderschrank leer! Bitte im Chat öffnen.', 'error');
+        const template = gmGet('sell_template');
+        if (!template) return showToast('Bitte verkaufe zuerst EINEN Avatar manuell, damit das Skript lernt!', 'error');
+
+        const btn = e.target;
+        btn.disabled = true;
+        const originalText = btn.textContent;
+        btn.textContent = 'Verkaufe... (Bitte warten)';
+        btn.style.opacity = '0.7';
+
+        const avatarsToSell = [...state.ownAvatars];
+        let soldCount = 0;
+
+        for (const av of avatarsToSell) {
+            const success = await sellAvatar(av, true);
+            if (success) soldCount++;
+            await new Promise(res => setTimeout(res, 350)); 
+        }
+
+        btn.disabled = false;
+        btn.textContent = originalText;
+        btn.style.opacity = '1';
+        
+        if (soldCount > 0) {
+            showToast(`Erfolgreich ${soldCount} Avatare auf den Markt gestellt! 💰`, 'success');
+            setTimeout(fetchMyListings, 1000); 
+        } else {
+            showToast('Keine Avatare verkauft.', 'error');
+        }
     });
 
     panel.querySelector('#tm-add-macro').addEventListener('click', () => {
@@ -1031,12 +1269,12 @@
 
     const blockType = panel.querySelector('#tm-block-type'); const userSelect = panel.querySelector('#tm-block-user-select'); const textInput = panel.querySelector('#tm-block-input');
     blockType.addEventListener('change', () => {
-      if (blockType.value === 'user_list') { userSelect.style.display = 'block'; textInput.style.display = 'none'; }
+      if (blockType.value === 'user_list') { userSelect.style.display = 'block'; textInput.style.display = 'none'; } 
       else { userSelect.style.display = 'none'; textInput.style.display = 'block'; textInput.placeholder = blockType.value === 'user_manual' ? 'ID eingeben...' : 'Wort eingeben...'; }
     });
     panel.querySelector('#tm-add-block').addEventListener('click', () => {
       const val = blockType.value === 'user_list' ? userSelect.value : textInput.value.trim(); if (!val) return showToast('Eingabe leer!', 'error');
-      if (blockType.value.startsWith('user')) { if (!state.blockedUsers.includes(val)) { state.blockedUsers.push(val); updateSetting('blockedUsers', state.blockedUsers); } }
+      if (blockType.value.startsWith('user')) { if (!state.blockedUsers.includes(val)) { state.blockedUsers.push(val); updateSetting('blockedUsers', state.blockedUsers); } } 
       else { if (!state.blockedWords.includes(val)) { state.blockedWords.push(val); updateSetting('blockedWords', state.blockedWords); } }
       textInput.value = ''; renderBlocks(); window.dispatchEvent(new CustomEvent('TndrHXSyncBlocks', { detail: { users: state.blockedUsers, words: state.blockedWords } })); showToast('Blockiert!', 'success');
     });
@@ -1063,7 +1301,7 @@
     ui.header.addEventListener('mousedown', (e) => { if (e.target.tagName === 'BUTTON') return; isDragging = true; const rect = panel.getBoundingClientRect(); dragOffsetX = e.clientX - rect.left; dragOffsetY = e.clientY - rect.top; e.preventDefault(); });
     window.addEventListener('mousemove', (e) => { if (!isDragging) return; panel.style.left = Math.max(0, Math.min(e.clientX - dragOffsetX, window.innerWidth - panel.offsetWidth)) + 'px'; panel.style.top = Math.max(0, Math.min(e.clientY - dragOffsetY, window.innerHeight - panel.offsetHeight)) + 'px'; panel.style.right = 'auto'; panel.style.bottom = 'auto'; state.panelPos = { left: parseInt(panel.style.left), top: parseInt(panel.style.top) }; });
     window.addEventListener('mouseup', () => { if (isDragging) { isDragging = false; gmSet('panel_pos', state.panelPos); } });
-
+    
     const resizeHandle = panel.querySelector('#tm-resize-handle'); let isResizing = false, startWidth, startHeight, startX, startY;
     resizeHandle.addEventListener('mousedown', (e) => { isResizing = true; startWidth = panel.offsetWidth; startHeight = panel.offsetHeight; startX = e.clientX; startY = e.clientY; e.preventDefault(); e.stopPropagation(); });
     window.addEventListener('mousemove', (e) => { if (!isResizing) return; panel.style.width = Math.max(280, startWidth + (e.clientX - startX)) + 'px'; panel.style.height = Math.max(300, startHeight + (e.clientY - startY)) + 'px'; });
@@ -1093,11 +1331,11 @@
     createUI();
     watchForAvatarsAndChat();
     updateStatus();
-    startHeartbeat();
+    startHeartbeat(); 
   }
 
   injectWebSocketInterceptor();
-  if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', boot); }
+  if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', boot); } 
   else { boot(); }
 
 })();
