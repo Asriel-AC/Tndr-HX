@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tndr-HX
 // @namespace    tm-tndr-hx-tools
-// @version      1.0.0
+// @version      1.0.1
 // @description  Unendlich Emojis, Makros, Emoji-Dieb, Block+, Avatar Steal-To-Vault & Market-Manager. Remote-Controlled by Python.
 // @author       Asriel 
 // @license      GPL-3.0
@@ -220,6 +220,13 @@
 
         let payload = Object.assign({}, template);
         payload[imgKey] = base64;
+        
+        // KATEGORIE FIX: Array oder Zahl für Kategorie "20" (Sonstiges) erzwingen
+        for (let key in payload) {
+            if (key.toLowerCase().includes('cat')) {
+                payload[key] = Array.isArray(template[key]) ? [20] : 20; 
+            }
+        }
 
         const upRes = await GM_xmlhttpRequestPromise({
             method: 'POST',
@@ -265,15 +272,22 @@
       payload[idKey] = avatarObj[idType];
       if (priceKey) payload[priceKey] = isNaN(price) ? 10 : price;
 
+      // GELERNTES KATEGORIEFELD KORREKT FORCEN (ARRAY ODER ZAHL)
       if (catKey && payload.hasOwnProperty(catKey)) {
-          if (avatarObj.categories && avatarObj.categories.length > 0) {
-              payload[catKey] = avatarObj.categories[0].id; 
-          } else {
-              payload[catKey] = null; 
+          payload[catKey] = Array.isArray(template[catKey]) ? [20] : 20; 
+      } else {
+          // Fallback, falls catKey anders hieß
+          for (let key in payload) {
+              if (key.toLowerCase().includes('cat')) {
+                  payload[key] = Array.isArray(template[key]) ? [20] : 20;
+              }
           }
       }
 
       if (!silent) showToast('Stelle in den Markt...', 'info');
+
+      // DEBUG: Payload vor dem Senden in der Konsole ausgeben
+      console.log("[Tndr-HX Debug] Sende Verkaufs-Payload an Tandro:", payload);
 
       try {
           const upRes = await GM_xmlhttpRequestPromise({
@@ -292,11 +306,15 @@
               renderOwnAvatars();
               return true;
           } else {
-              if (!silent) showToast(`Verkauf fehlgeschlagen: HTTP ${upRes.status}`, 'error');
+              console.error("[Tndr-HX Error] Verkauf fehlgeschlagen! HTTP Status:", upRes.status);
+              console.error("[Tndr-HX Error] Antwort von Tandro:", upRes.responseText);
+              
+              if (!silent) showToast(`Verkauf fehlgeschlagen: HTTP ${upRes.status} (Siehe Konsole!)`, 'error');
               return false;
           }
       } catch (e) {
-          if (!silent) showToast('Fehler beim Auto-Sell.', 'error');
+          console.error("[Tndr-HX Error] Exception beim Auto-Sell:", e);
+          if (!silent) showToast('Fehler beim Auto-Sell (Siehe Konsole).', 'error');
           return false;
       }
   }
@@ -618,6 +636,11 @@
   function handleSeenEmojiInDOM(img) {
     const url = img.src;
 
+    // FIX: Verhindert, dass das Skript die nativen Emojis im Tandro-Menü manipuliert.
+    // Ohne diesen Check würde der [+] Button in das native Menü eingefügt und beim Klicken ein "+" in den Chat schreiben!
+    const msgEl = img.closest('[data-user-id], .message, .chat-message, .chat-line, .speech-bubble, .message-content');
+    if (!msgEl) return;
+
     if (img.parentNode && !img.parentNode.classList.contains('tm-emoji-wrapper')) {
         if (!state.localEmojis.some(em => em.dataUrl === url)) {
             const wrapper = document.createElement('span');
@@ -651,7 +674,6 @@
 
     if (!state.seenEmojis.some(em => em.url === url) && !state.localEmojis.some(em => em.dataUrl === url)) {
         let sender = 'Unbekannt';
-        const msgEl = img.closest('[data-user-id], .message, .chat-message');
         if (msgEl) {
             const nameEl = msgEl.querySelector('.username, .name, .sender');
             if (nameEl) sender = nameEl.textContent.trim();
