@@ -14,6 +14,9 @@ from flask_cors import CORS
 import logging
 import hashlib
 import webbrowser
+import urllib.request
+
+APP_VERSION = "1.1.0"
 
 # --- Setup AppData Directory ---
 if sys.platform == 'win32':
@@ -47,6 +50,31 @@ afk_cooldowns = {}
 
 chat_queue = queue.Queue()
 browser_actions_queue = queue.Queue()
+
+update_available = False
+latest_github_version = ""
+
+def check_github_update():
+    global update_available, latest_github_version
+    try:
+        req = urllib.request.Request("https://api.github.com/repos/Asriel-AC/Tndr-HX/releases/latest", headers={'User-Agent': 'Tndr-HX-App'})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            data = json.loads(response.read().decode())
+            latest = data.get("tag_name", "").lstrip("v")
+            if latest and latest != APP_VERSION:
+                v_curr = [int(x) for x in APP_VERSION.split('.') if x.isdigit()]
+                v_lat = [int(x) for x in latest.split('.') if x.isdigit()]
+                
+                # Zero padding for comparison length matching
+                length = max(len(v_curr), len(v_lat))
+                v_curr.extend([0] * (length - len(v_curr)))
+                v_lat.extend([0] * (length - len(v_lat)))
+                
+                if v_lat > v_curr:
+                    update_available = True
+                    latest_github_version = latest
+    except Exception:
+        pass
 
 def load_db():
     default_db = {
@@ -282,7 +310,7 @@ def handle_ws_event(direction: str, event: str, data, my_id: str = ""):
             room_name = logger_state.get_room_name(rid if rid is not None else logger_state.current_room_id)
 
             logger_state.log_chat_event({
-                "ts": ts,
+                "ts": datetime.now().isoformat(),  # Aktualisiert auf ISO Format
                 "dir": "in",
                 "room_id": int(rid) if rid is not None else logger_state.current_room_id,
                 "room_name": room_name,
@@ -338,7 +366,6 @@ def handle_ping():
 def get_state():
     state_data = dict(db)
     actions = []
-    # Send queued commands (e.g. Market Auto-Refresh) to the Browser
     while not browser_actions_queue.empty():
         actions.append(browser_actions_queue.get())
     state_data["actions"] = actions
@@ -346,6 +373,8 @@ def get_state():
 
 @app.route('/api/action', methods=['POST'])
 def handle_action():
+    global last_ping_time
+    last_ping_time = time.time()  # Aktualisiert ebenfalls den Monitor
     data = request.json
     act = data.get('action')
     payload = data.get('payload')
@@ -369,6 +398,8 @@ def handle_action():
 
 @app.route('/api/ws', methods=['POST'])
 def handle_ws():
+    global last_ping_time
+    last_ping_time = time.time()  # Jede WebSocket-Aktivität hält die Verbindung am Leben
     data = request.json
     direction = data.get('direction')
     event = data.get('event')
@@ -448,7 +479,8 @@ def connection_monitor():
     global client_connected
     while True:
         time.sleep(2)
-        if client_connected and (time.time() - last_ping_time > 6):
+        # Timeout auf massive 20 Sekunden erhöht, um Browser-Drosselung abzufangen!
+        if client_connected and (time.time() - last_ping_time > 20):
             client_connected = False
             chat_queue.put({"time": datetime.now().strftime("%H:%M:%S"), "user": "SYSTEM", "text": "Verbindung zum Browser verloren.", "dir": "sys"})
 
@@ -458,7 +490,7 @@ def run_flask():
 class ModernTndrHXGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Tndr-HX Control Center")
+        self.root.title(f"Tndr-HX Control Center v{APP_VERSION}")
         self.root.geometry("950x650")
         self.root.configure(bg="#202225")
         
@@ -481,6 +513,10 @@ class ModernTndrHXGUI:
         
         self.right_frame = ttk.Frame(root)
         self.right_frame.pack(side="right", fill="both", expand=True, padx=(0, 20), pady=20)
+
+        # Update Banner
+        self.update_banner = tk.Label(self.left_frame, text="🚀 Neues Update verfügbar! Hier klicken", bg="#3ba55c", fg="white", font=("Segoe UI", 10, "bold"), cursor="hand2")
+        self.update_banner.bind("<Button-1>", lambda e: webbrowser.open("https://github.com/Asriel-AC/Tndr-HX/releases/latest"))
 
         ttk.Label(self.left_frame, text="⚙️ Einstellungen", style="Header.TLabel").pack(anchor="w", pady=(0, 15))
         
@@ -585,6 +621,11 @@ class ModernTndrHXGUI:
                 messagebox.showerror("Fehler", str(e))
 
     def update_gui_loop(self):
+        if update_available and not getattr(self, 'update_shown', False):
+            self.update_banner.config(text=f"🚀 Tndr-HX Update v{latest_github_version} verfügbar! Hier klicken")
+            self.update_banner.pack(fill="x", pady=(0, 10), before=self.status_label)
+            self.update_shown = True
+
         if client_connected:
             self.status_var.set("🟢 Verbunden mit Tandro")
             self.status_label.configure(foreground="#3ba55c")
@@ -624,6 +665,7 @@ def on_closing():
     os._exit(0)
 
 if __name__ == "__main__":
+    threading.Thread(target=check_github_update, daemon=True).start()
     threading.Thread(target=connection_monitor, daemon=True).start()
     threading.Thread(target=run_flask, daemon=True).start()
     threading.Thread(target=background_flusher, daemon=True).start()
