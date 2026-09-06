@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tndr-HX
 // @namespace    tm-tndr-hx-tools
-// @version      1.0.1
+// @version      1.0.2
 // @description  Unendlich Emojis, Makros, Emoji-Dieb, Block+, Avatar Steal-To-Vault & Market-Manager. Remote-Controlled by Python.
 // @author       Asriel 
 // @license      GPL-3.0
@@ -705,6 +705,19 @@
     avatarList.appendChild(img);
   }
 
+  function scanDOMForAvatars() {
+    let found = 0;
+    document.querySelectorAll('img').forEach(img => { 
+        if (img.src.startsWith(avatarHost)) {
+            if (!seenAvatars.has(img.src) && !uploadedAvatars.has(img.src)) {
+                addAvatarToUI(img.src);
+                found++;
+            }
+        }
+    });
+    showToast(found > 0 ? `${found} neue Avatare im Chat gefunden!` : 'Keine neuen Avatare gefunden.', found > 0 ? 'success' : 'info');
+  }
+
   function watchForAvatarsAndChat() {
     const observer = new MutationObserver(mutations => {
       for (const m of mutations) {
@@ -1164,8 +1177,13 @@
       </div>
 
       <div id="tab-avatars" class="tm-tab-content">
-        <div style="font-weight:600;color:var(--tm-primary);margin-bottom:8px;">🥷 Geklaute Avatare (In Vault speichern)</div>
-        <div style="font-size:11px;color:var(--tm-text-muted);margin-bottom:8px;">Einmalig einen manuell hochladen, damit das Skript die API lernt. Klicke dann hier auf gefundene Avatare im Chat.</div>
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
+            <div>
+                <div style="font-weight:600;color:var(--tm-primary);margin-bottom:4px;">🥷 Geklaute Avatare (In Vault speichern)</div>
+                <div style="font-size:11px;color:var(--tm-text-muted);">Einmalig einen manuell hochladen, damit das Skript die API lernt. Klicke dann hier auf gefundene Avatare im Chat.</div>
+            </div>
+            <button id="tm-scan-avatars" class="tm-btn tm-btn-outline" style="padding:4px 8px;font-size:11px;white-space:nowrap;margin-left:8px;">🔄 Chat Scannen</button>
+        </div>
         <div id="tm-avatar-list" style="display:flex;flex-wrap:wrap;gap:8px;flex:1;min-height:0;overflow-y:auto;align-content:start;margin-bottom:4px;background:rgba(0,0,0,0.2);padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.05);"></div>
       </div>
 
@@ -1240,6 +1258,8 @@
         if (state.activeTab === 'market') { renderOwnAvatars(); renderMyListings(); }
       });
     });
+
+    panel.querySelector('#tm-scan-avatars').addEventListener('click', scanDOMForAvatars);
 
     panel.querySelector('#tm-load-market').addEventListener('click', () => fetchMyListings(false));
     panel.querySelector('#tm-extend-market').addEventListener('click', () => extendAllListings(false));
