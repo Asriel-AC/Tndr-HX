@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tndr-HX
 // @namespace    tm-tndr-hx-tools
-// @version      1.0.2
+// @version      1.1.0
 // @description  Unendlich Emojis, Makros, Emoji-Dieb, Block+, Avatar Steal-To-Vault & Market-Manager. Remote-Controlled by Python.
 // @author       Asriel 
 // @license      GPL-3.0
@@ -11,6 +11,7 @@
 // @connect      127.0.0.1
 // @connect      localhost
 // @connect      tandro.de
+// @connect      api.github.com
 // @allFrames    true
 // ==/UserScript==
 
@@ -20,6 +21,7 @@
   const API_URL = "http://127.0.0.1:54321/api";
   const avatarHost = 'https://cyehwjytcqcjmsvprrgh.supabase.co/storage/v1/object/public/avatars/';
   const emojiHost = 'https://cyehwjytcqcjmsvprrgh.supabase.co/storage/v1/object/public/emojis/';
+  const SCRIPT_VERSION = "1.1.0";
 
   function gmGet(k, d) { try { const v = localStorage.getItem(`tm_${k}`); return v ? JSON.parse(v) : d; } catch { return d; } }
   function gmSet(k, v) { try { localStorage.setItem(`tm_${k}`, JSON.stringify(v)); } catch {} }
@@ -86,6 +88,50 @@
   const uploadedAvatars = new Set(savedUploads);
   const seenAvatars = new Set(); 
   let audioCtx = null;
+
+  function isNewerVersion(current, latest) {
+      const v1 = current.split('.').map(Number);
+      const v2 = latest.split('.').map(Number);
+      for (let i = 0; i < Math.max(v1.length, v2.length); i++) {
+          const num1 = v1[i] || 0;
+          const num2 = v2[i] || 0;
+          if (num1 < num2) return true;
+          if (num1 > num2) return false;
+      }
+      return false;
+  }
+
+  function checkForUpdates() {
+      const lastCheck = gmGet('last_update_check', 0);
+      const now = Date.now();
+      if (now - lastCheck < 12 * 60 * 60 * 1000) return; 
+
+      GM_xmlhttpRequest({
+          method: 'GET',
+          url: 'https://api.github.com/repos/Asriel-AC/Tndr-HX/releases/latest',
+          onload: function(res) {
+              if (res.status === 200) {
+                  try {
+                      const data = JSON.parse(res.responseText);
+                      let latestVersion = data.tag_name;
+                      if (latestVersion.startsWith('v')) latestVersion = latestVersion.substring(1);
+                      
+                      gmSet('last_update_check', now);
+
+                      if (isNewerVersion(SCRIPT_VERSION, latestVersion)) {
+                          const banner = document.getElementById('tm-update-banner');
+                          const vSpan = document.getElementById('tm-update-version');
+                          if (banner && vSpan) {
+                              vSpan.textContent = latestVersion;
+                              banner.style.display = 'block';
+                              banner.onclick = () => window.open('https://github.com/Asriel-AC/Tndr-HX/releases/latest', '_blank');
+                          }
+                      }
+                  } catch(e) {}
+              }
+          }
+      });
+  }
 
   function markAvatarAsOwned(url) {
     if (!url) return;
@@ -221,7 +267,6 @@
         let payload = Object.assign({}, template);
         payload[imgKey] = base64;
         
-        // KATEGORIE FIX: Array oder Zahl für Kategorie "20" (Sonstiges) erzwingen
         for (let key in payload) {
             if (key.toLowerCase().includes('cat')) {
                 payload[key] = Array.isArray(template[key]) ? [20] : 20; 
@@ -272,11 +317,9 @@
       payload[idKey] = avatarObj[idType];
       if (priceKey) payload[priceKey] = isNaN(price) ? 10 : price;
 
-      // GELERNTES KATEGORIEFELD KORREKT FORCEN (ARRAY ODER ZAHL)
       if (catKey && payload.hasOwnProperty(catKey)) {
           payload[catKey] = Array.isArray(template[catKey]) ? [20] : 20; 
       } else {
-          // Fallback, falls catKey anders hieß
           for (let key in payload) {
               if (key.toLowerCase().includes('cat')) {
                   payload[key] = Array.isArray(template[key]) ? [20] : 20;
@@ -285,9 +328,6 @@
       }
 
       if (!silent) showToast('Stelle in den Markt...', 'info');
-
-      // DEBUG: Payload vor dem Senden in der Konsole ausgeben
-      console.log("[Tndr-HX Debug] Sende Verkaufs-Payload an Tandro:", payload);
 
       try {
           const upRes = await GM_xmlhttpRequestPromise({
@@ -306,15 +346,11 @@
               renderOwnAvatars();
               return true;
           } else {
-              console.error("[Tndr-HX Error] Verkauf fehlgeschlagen! HTTP Status:", upRes.status);
-              console.error("[Tndr-HX Error] Antwort von Tandro:", upRes.responseText);
-              
-              if (!silent) showToast(`Verkauf fehlgeschlagen: HTTP ${upRes.status} (Siehe Konsole!)`, 'error');
+              if (!silent) showToast(`Verkauf fehlgeschlagen: HTTP ${upRes.status}`, 'error');
               return false;
           }
       } catch (e) {
-          console.error("[Tndr-HX Error] Exception beim Auto-Sell:", e);
-          if (!silent) showToast('Fehler beim Auto-Sell (Siehe Konsole).', 'error');
+          if (!silent) showToast('Fehler beim Auto-Sell.', 'error');
           return false;
       }
   }
@@ -636,8 +672,6 @@
   function handleSeenEmojiInDOM(img) {
     const url = img.src;
 
-    // FIX: Verhindert, dass das Skript die nativen Emojis im Tandro-Menü manipuliert.
-    // Ohne diesen Check würde der [+] Button in das native Menü eingefügt und beim Klicken ein "+" in den Chat schreiben!
     const msgEl = img.closest('[data-user-id], .message, .chat-message, .chat-line, .speech-bubble, .message-content');
     if (!msgEl) return;
 
@@ -705,17 +739,35 @@
     avatarList.appendChild(img);
   }
 
-  function scanDOMForAvatars() {
-    let found = 0;
-    document.querySelectorAll('img').forEach(img => { 
-        if (img.src.startsWith(avatarHost)) {
-            if (!seenAvatars.has(img.src) && !uploadedAvatars.has(img.src)) {
-                addAvatarToUI(img.src);
-                found++;
-            }
-        }
-    });
-    showToast(found > 0 ? `${found} neue Avatare im Chat gefunden!` : 'Keine neuen Avatare gefunden.', found > 0 ? 'success' : 'info');
+  function embedImageLinks(rootNode = document) {
+      try {
+          let links = [];
+          if (rootNode.tagName === 'A') {
+              links = [rootNode];
+          } else if (rootNode.querySelectorAll) {
+              links = rootNode.querySelectorAll('a');
+          }
+          
+          links.forEach(a => {
+              if (a.dataset.tmEmbedded) return;
+              const url = a.href;
+              if (!url) return;
+              const isImage = /\.(jpeg|jpg|gif|png|webp)(\?.*)?$/i.test(url);
+              
+              if (isImage) {
+                  a.dataset.tmEmbedded = 'true';
+                  const img = document.createElement('img');
+                  img.src = url;
+                  img.style.cssText = 'display:block; max-width:250px; max-height:250px; border-radius:8px; margin-top:5px; border:1px solid rgba(255,255,255,0.1); cursor:pointer; box-shadow:0 4px 6px rgba(0,0,0,0.3);';
+                  img.onclick = (e) => { e.preventDefault(); window.open(url, '_blank'); };
+                  img.onerror = () => { img.style.display = 'none'; };
+                  
+                  if (a.parentNode) {
+                      a.parentNode.insertBefore(img, a.nextSibling);
+                  }
+              }
+          });
+      } catch (err) {}
   }
 
   function watchForAvatarsAndChat() {
@@ -735,14 +787,18 @@
                 if (img.src.startsWith(emojiHost)) handleSeenEmojiInDOM(img);
             });
           }
+          
+          embedImageLinks(node);
         }
       }
     });
     observer.observe(document.body, { childList: true, subtree: true });
+    
     document.querySelectorAll('img').forEach(img => { 
         if (img.src.startsWith(avatarHost)) addAvatarToUI(img.src); 
         if (img.src.startsWith(emojiHost)) handleSeenEmojiInDOM(img);
     });
+    embedImageLinks(document);
   }
 
   window.addEventListener('TndrHXWSState', (e) => { state.wsConnected = (e.detail === 'open'); updateStatus(); });
@@ -921,7 +977,7 @@
         .catch(() => {
           if (state.backendConnected) { state.backendConnected = false; updateStatus(); showToast("Warnung: Verbindung zum Backend verloren!", "error"); }
         });
-    }, 4000);
+    }, 2500); // 2.5 seconds ping interval to prevent disconnects in background tabs
   }
 
   function escapeHtml(text) { return (text||'').toString().replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
@@ -1133,6 +1189,9 @@
 
     panel.innerHTML = `
       <div id="tm-dropzone"><span style="font-size:32px;margin-bottom:10px;">📥</span>Bilder hier ablegen</div>
+      <div id="tm-update-banner" style="display:none; background: #3ba55c; color:white; padding:8px; font-size:12px; text-align:center; font-weight:bold; cursor:pointer; border-bottom:1px solid rgba(0,0,0,0.2);">
+        🚀 Tndr-HX Update auf v<span id="tm-update-version"></span> verfügbar! (Hier klicken)
+      </div>
       <div id="tm-header">
         <div style="display:flex;align-items:center;gap:8px;">
           <span style="font-weight:600;color:#fff;">Tndr-HX</span>
@@ -1259,7 +1318,19 @@
       });
     });
 
-    panel.querySelector('#tm-scan-avatars').addEventListener('click', scanDOMForAvatars);
+    // Scan avatars function (manual trigger)
+    panel.querySelector('#tm-scan-avatars').addEventListener('click', () => {
+        let found = 0;
+        document.querySelectorAll('img').forEach(img => { 
+            if (img.src.startsWith(avatarHost)) {
+                if (!seenAvatars.has(img.src) && !uploadedAvatars.has(img.src)) {
+                    addAvatarToUI(img.src);
+                    found++;
+                }
+            }
+        });
+        showToast(found > 0 ? `${found} neue Avatare im Chat gefunden!` : 'Keine neuen Avatare gefunden.', found > 0 ? 'success' : 'info');
+    });
 
     panel.querySelector('#tm-load-market').addEventListener('click', () => fetchMyListings(false));
     panel.querySelector('#tm-extend-market').addEventListener('click', () => extendAllListings(false));
@@ -1368,6 +1439,7 @@
     watchForAvatarsAndChat();
     updateStatus();
     startHeartbeat(); 
+    checkForUpdates();
   }
 
   injectWebSocketInterceptor();
