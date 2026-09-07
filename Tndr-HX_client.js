@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tndr-HX
 // @namespace    tm-tndr-hx-tools
-// @version      1.1.0
+// @version      1.1.1
 // @description  Unendlich Emojis, Makros, Emoji-Dieb, Block+, Avatar Steal-To-Vault & Market-Manager. Remote-Controlled by Python.
 // @author       Asriel 
 // @license      GPL-3.0
@@ -21,7 +21,7 @@
   const API_URL = "http://127.0.0.1:54321/api";
   const avatarHost = 'https://cyehwjytcqcjmsvprrgh.supabase.co/storage/v1/object/public/avatars/';
   const emojiHost = 'https://cyehwjytcqcjmsvprrgh.supabase.co/storage/v1/object/public/emojis/';
-  const SCRIPT_VERSION = "1.1.0";
+  const SCRIPT_VERSION = "1.1.1";
 
   function gmGet(k, d) { try { const v = localStorage.getItem(`tm_${k}`); return v ? JSON.parse(v) : d; } catch { return d; } }
   function gmSet(k, v) { try { localStorage.setItem(`tm_${k}`, JSON.stringify(v)); } catch {} }
@@ -101,10 +101,13 @@
       return false;
   }
 
-  function checkForUpdates() {
+  function checkForUpdates(manual = false) {
       const lastCheck = gmGet('last_update_check', 0);
       const now = Date.now();
-      if (now - lastCheck < 12 * 60 * 60 * 1000) return; 
+      
+      if (!manual && (now - lastCheck < 12 * 60 * 60 * 1000)) return; 
+
+      if (manual) showToast('Suche nach Updates...', 'info');
 
       GM_xmlhttpRequest({
           method: 'GET',
@@ -126,9 +129,19 @@
                               banner.style.display = 'block';
                               banner.onclick = () => window.open('https://github.com/Asriel-AC/Tndr-HX/releases/latest', '_blank');
                           }
+                          if (manual) showToast(`Update auf v${latestVersion} verfügbar!`, 'success');
+                      } else {
+                          if (manual) showToast('Tndr-HX ist auf dem neuesten Stand!', 'success');
                       }
-                  } catch(e) {}
+                  } catch(e) {
+                      if (manual) showToast('Fehler beim Auslesen der GitHub API.', 'error');
+                  }
+              } else {
+                  if (manual) showToast(`GitHub API Fehler: ${res.status}`, 'error');
               }
+          },
+          onerror: function() {
+              if (manual) showToast('Netzwerkfehler beim Update-Check!', 'error');
           }
       });
   }
@@ -441,8 +454,10 @@
       const btn = document.getElementById('tm-extend-market');
       if (btn && !silent) { btn.disabled = true; btn.textContent = 'Pushe...'; btn.style.opacity = '0.7'; }
 
+      const sortedListings = [...state.myListings].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+
       let successCount = 0;
-      for (const item of state.myListings) {
+      for (const item of sortedListings) {
           try {
               const res = await GM_xmlhttpRequestPromise({
                   method: 'POST',
@@ -457,7 +472,8 @@
       if (btn && !silent) { btn.disabled = false; btn.textContent = '🚀 Alle Pushen'; btn.style.opacity = '1'; }
       
       if (successCount > 0) {
-          showToast(silent ? `🤖 Auto-Market: ${successCount} Angebote erfolgreich gepusht!` : `${successCount} Angebote erfolgreich gepusht!`, 'success');
+          showToast(silent ? `🤖 Auto-Market: ${successCount} Angebote erfolgreich gepusht!` : `${successCount} Angebote gepusht!`, 'success');
+          if (!silent) setTimeout(() => fetchMyListings(true), 1000);
       } else if (!silent) {
           showToast('Fehler beim Pushen der Angebote.', 'error');
       }
@@ -671,7 +687,6 @@
 
   function handleSeenEmojiInDOM(img) {
     const url = img.src;
-
     const msgEl = img.closest('[data-user-id], .message, .chat-message, .chat-line, .speech-bubble, .message-content');
     if (!msgEl) return;
 
@@ -739,21 +754,16 @@
     avatarList.appendChild(img);
   }
 
-  function embedImageLinks(rootNode = document) {
+  function embedImageLinks(rootNode) {
+      if (!rootNode || !rootNode.querySelectorAll) return;
       try {
-          let links = [];
-          if (rootNode.tagName === 'A') {
-              links = [rootNode];
-          } else if (rootNode.querySelectorAll) {
-              links = rootNode.querySelectorAll('a');
-          }
-          
+          const links = rootNode.querySelectorAll('a');
           links.forEach(a => {
               if (a.dataset.tmEmbedded) return;
               const url = a.href;
               if (!url) return;
-              const isImage = /\.(jpeg|jpg|gif|png|webp)(\?.*)?$/i.test(url);
               
+              const isImage = /\.(jpeg|jpg|gif|png|webp)(\?.*)?$/i.test(url);
               if (isImage) {
                   a.dataset.tmEmbedded = 'true';
                   const img = document.createElement('img');
@@ -761,7 +771,6 @@
                   img.style.cssText = 'display:block; max-width:250px; max-height:250px; border-radius:8px; margin-top:5px; border:1px solid rgba(255,255,255,0.1); cursor:pointer; box-shadow:0 4px 6px rgba(0,0,0,0.3);';
                   img.onclick = (e) => { e.preventDefault(); window.open(url, '_blank'); };
                   img.onerror = () => { img.style.display = 'none'; };
-                  
                   if (a.parentNode) {
                       a.parentNode.insertBefore(img, a.nextSibling);
                   }
@@ -786,9 +795,8 @@
                 if (img.src.startsWith(avatarHost)) addAvatarToUI(img.src); 
                 if (img.src.startsWith(emojiHost)) handleSeenEmojiInDOM(img);
             });
+            embedImageLinks(node);
           }
-          
-          embedImageLinks(node);
         }
       }
     });
@@ -798,7 +806,7 @@
         if (img.src.startsWith(avatarHost)) addAvatarToUI(img.src); 
         if (img.src.startsWith(emojiHost)) handleSeenEmojiInDOM(img);
     });
-    embedImageLinks(document);
+    embedImageLinks(document.body);
   }
 
   window.addEventListener('TndrHXWSState', (e) => { state.wsConnected = (e.detail === 'open'); updateStatus(); });
@@ -977,7 +985,7 @@
         .catch(() => {
           if (state.backendConnected) { state.backendConnected = false; updateStatus(); showToast("Warnung: Verbindung zum Backend verloren!", "error"); }
         });
-    }, 2500); // 2.5 seconds ping interval to prevent disconnects in background tabs
+    }, 2500);
   }
 
   function escapeHtml(text) { return (text||'').toString().replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
@@ -1062,11 +1070,34 @@
           list.innerHTML = '<div style="opacity:0.5;font-size:11px;padding:4px;">Keine aktiven Angebote gefunden oder noch nicht geladen.</div>';
           return;
       }
-      state.myListings.forEach(item => {
+
+      const displayListings = [...state.myListings].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+      displayListings.forEach(item => {
           const id = item.id;
           const price = item.price || item.costs || item.amount || "?";
           const imgUrl = item.watermarkedurl || item.url || (item.avatar && item.avatar.url) || (item.useravatar && item.useravatar.url) || item.image || "";
           
+          let timeStr = "";
+          if (item.timestamp) {
+              const expirationTime = item.timestamp + (7 * 24 * 60 * 60 * 1000);
+              const diff = expirationTime - Date.now();
+              
+              if (diff > 0) {
+                  const d = Math.floor(diff / (1000 * 60 * 60 * 24));
+                  const h = Math.floor((diff / (1000 * 60 * 60)) % 24);
+                  const m = Math.floor((diff / 1000 / 60) % 60);
+                  const s = Math.floor((diff / 1000) % 60);
+                  
+                  if (d > 0) timeStr = `${d}T ${h}h ${m}m ${s}s`;
+                  else if (h > 0) timeStr = `${h}h ${m}m ${s}s`;
+                  else if (m > 0) timeStr = `${m}m ${s}s`;
+                  else timeStr = `${s}s`;
+              } else {
+                  timeStr = "Abgelaufen";
+              }
+          }
+
           const div = document.createElement('div');
           div.style.cssText = 'display:flex;align-items:center;justify-content:space-between;background:rgba(0,0,0,0.2);padding:4px 8px;border-radius:6px;margin-bottom:4px;border:1px solid rgba(255,255,255,0.05);';
           
@@ -1075,7 +1106,10 @@
           div.innerHTML = `
               <div style="display:flex;align-items:center;gap:8px;">
                   ${imgHtml}
-                  <span style="font-size:12px;font-weight:bold;color:#3ba55c;">${escapeHtml(price)} AP</span>
+                  <div style="display:flex;flex-direction:column;">
+                      <span style="font-size:12px;font-weight:bold;color:#3ba55c;">${escapeHtml(price)} AP</span>
+                      ${timeStr ? `<span style="font-size:9px;color:#aaa;margin-top:-2px;">⏳ ${timeStr}</span>` : ''}
+                  </div>
               </div>
               <button class="tm-btn tm-btn-danger" style="padding:4px 8px;font-size:11px;">Entfernen</button>
           `;
@@ -1134,20 +1168,31 @@
   }
 
   function renderBlocks() {
-    const list = document.getElementById('tm-block-list'); if (!list) return;
+    const list = document.getElementById('tm-block-list'); 
+    if (!list) return;
     list.innerHTML = '';
-    if (state.blockedUsers.length === 0 && state.blockedWords.length === 0) { list.innerHTML = '<div style="opacity:0.5;text-align:center;padding:20px;">Die Blockliste ist leer.</div>'; return; }
+    if (state.blockedUsers.length === 0 && state.blockedWords.length === 0) { 
+      list.innerHTML = '<div style="opacity:0.5;text-align:center;padding:20px;">Die Blockliste ist leer.</div>'; 
+      return; 
+    }
     const createItem = (type, value) => {
-      const div = document.createElement('div'); div.style.cssText = 'display:flex;justify-content:space-between;align-items:center;background:var(--tm-surface);padding:8px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.05);margin-bottom:4px;';
-      let disp = escapeHtml(value); if (type === 'User' && state.knownUsers[value]) disp = `${escapeHtml(state.knownUsers[value])} (${escapeHtml(value)})`;
+      const div = document.createElement('div'); 
+      div.style.cssText = 'display:flex;justify-content:space-between;align-items:center;background:var(--tm-surface);padding:8px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.05);margin-bottom:4px;';
+      let disp = escapeHtml(value); 
+      if (type === 'User' && state.knownUsers[value]) disp = `${escapeHtml(state.knownUsers[value])} (${escapeHtml(value)})`;
       div.innerHTML = `<div><span style="opacity:0.6;font-size:11px;margin-right:6px;background:rgba(0,0,0,0.3);padding:2px 4px;border-radius:4px;">${type}</span><span style="font-weight:500;">${disp}</span></div>`;
-      const delBtn = document.createElement('button'); delBtn.className = 'tm-btn tm-btn-danger'; delBtn.style.padding = '4px 8px'; delBtn.textContent = 'Freigeben';
+      const delBtn = document.createElement('button'); 
+      delBtn.className = 'tm-btn tm-btn-danger'; 
+      delBtn.style.padding = '4px 8px'; 
+      delBtn.textContent = 'Freigeben';
       delBtn.onclick = () => {
         if (type === 'User') { state.blockedUsers = state.blockedUsers.filter(u => String(u) !== String(value)); updateSetting('blockedUsers', state.blockedUsers); }
         if (type === 'Wort') { state.blockedWords = state.blockedWords.filter(w => w !== value); updateSetting('blockedWords', state.blockedWords); }
-        renderBlocks(); window.dispatchEvent(new CustomEvent('TndrHXSyncBlocks', { detail: { users: state.blockedUsers, words: state.blockedWords } }));
+        renderBlocks(); 
+        window.dispatchEvent(new CustomEvent('TndrHXSyncBlocks', { detail: { users: state.blockedUsers, words: state.blockedWords } }));
       };
-      div.appendChild(delBtn); list.appendChild(div);
+      div.appendChild(delBtn); 
+      list.appendChild(div);
     };
     state.blockedUsers.forEach(u => createItem('User', u));
     state.blockedWords.forEach(w => createItem('Wort', w));
@@ -1198,7 +1243,10 @@
           <span id="tm-status" style="font-size:11px;opacity:0.7;"></span>
           <span id="tm-backend-status" style="font-size:11px;font-weight:bold;margin-left:5px;"></span>
         </div>
-        <button id="tm-minimize" class="tm-btn tm-btn-outline" style="padding:4px 8px;">−</button>
+        <div style="display:flex;gap:4px;">
+          <button id="tm-check-update" class="tm-btn tm-btn-outline" style="padding:4px;" title="Nach Updates suchen">🔄</button>
+          <button id="tm-minimize" class="tm-btn tm-btn-outline" style="padding:4px 8px;">−</button>
+        </div>
       </div>
       <div id="tm-backend-warning" style="display:none; background:var(--tm-danger); color:white; padding:6px; font-size:11px; text-align:center;">
         ⚠️ Python-Backend fehlt! <a href="https://github.com/Asriel-AC/Tndr-HX/blob/main/Tndr-HX_backend.py" target="_blank" style="color:white; text-decoration:underline; font-weight:bold;">Hier herunterladen</a>
@@ -1305,6 +1353,8 @@
     document.body.appendChild(panel);
     ui.panel = panel; ui.status = panel.querySelector('#tm-status'); ui.backendStatus = panel.querySelector('#tm-backend-status'); ui.gallery = panel.querySelector('#tm-gallery'); ui.header = panel.querySelector('#tm-header');
 
+    panel.querySelector('#tm-check-update').addEventListener('click', () => checkForUpdates(true));
+
     const tabs = panel.querySelectorAll('.tm-tab');
     const contents = panel.querySelectorAll('.tm-tab-content');
     tabs.forEach(tab => {
@@ -1318,7 +1368,6 @@
       });
     });
 
-    // Scan avatars function (manual trigger)
     panel.querySelector('#tm-scan-avatars').addEventListener('click', () => {
         let found = 0;
         document.querySelectorAll('img').forEach(img => { 
