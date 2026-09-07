@@ -16,7 +16,7 @@ import hashlib
 import webbrowser
 import urllib.request
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 
 # --- Setup AppData Directory ---
 if sys.platform == 'win32':
@@ -54,18 +54,18 @@ browser_actions_queue = queue.Queue()
 update_available = False
 latest_github_version = ""
 
-def check_github_update():
+def check_github_update(manual=False, root=None):
     global update_available, latest_github_version
     try:
         req = urllib.request.Request("https://api.github.com/repos/Asriel-AC/Tndr-HX/releases/latest", headers={'User-Agent': 'Tndr-HX-App'})
         with urllib.request.urlopen(req, timeout=5) as response:
             data = json.loads(response.read().decode())
             latest = data.get("tag_name", "").lstrip("v")
-            if latest and latest != APP_VERSION:
+            if latest:
                 v_curr = [int(x) for x in APP_VERSION.split('.') if x.isdigit()]
                 v_lat = [int(x) for x in latest.split('.') if x.isdigit()]
                 
-                # Zero padding for comparison length matching
+                # Zero padding for comparison
                 length = max(len(v_curr), len(v_lat))
                 v_curr.extend([0] * (length - len(v_curr)))
                 v_lat.extend([0] * (length - len(v_lat)))
@@ -73,8 +73,14 @@ def check_github_update():
                 if v_lat > v_curr:
                     update_available = True
                     latest_github_version = latest
-    except Exception:
-        pass
+                    if manual and root:
+                        root.after(0, lambda: messagebox.showinfo("Update verfügbar", f"Eine neue Version (v{latest}) ist auf GitHub verfügbar!"))
+                else:
+                    if manual and root:
+                        root.after(0, lambda: messagebox.showinfo("Alles aktuell", f"Tndr-HX ist auf dem neuesten Stand (v{APP_VERSION})."))
+    except Exception as e:
+        if manual and root:
+            root.after(0, lambda: messagebox.showerror("Fehler", f"Konnte nicht nach Updates suchen:\n{e}"))
 
 def load_db():
     default_db = {
@@ -281,11 +287,7 @@ def handle_ws_event(direction: str, event: str, data, my_id: str = ""):
             rid = msg_data.get("room") or msg_data.get("roomId")
             user = (msg_data.get("user") or msg_data.get("nickname") or msg_data.get("senderName") or msg_data.get("userId") or "").strip()
             text = (msg_data.get("chatLine") or msg_data.get("message") or msg_data.get("speechBubbleText") or msg_data.get("content") or "").strip()
-            ts = (msg_data.get("timestamp") or msg_data.get("time") or "").strip()
             
-            if not ts:
-                ts = datetime.now().isoformat()
-
             is_server = bool(msg_data.get("isServerMessage", False))
             is_join = bool(msg_data.get("isJoin", False))
             is_leave = bool(msg_data.get("isLeave", False))
@@ -296,7 +298,7 @@ def handle_ws_event(direction: str, event: str, data, my_id: str = ""):
             if server_id:
                 mid = server_id
             else:
-                raw = f"{rid}|{ts}|{user}|{text}|{is_server}|{is_join}|{is_leave}"
+                raw = f"{rid}|{datetime.now().isoformat()}|{user}|{text}|{is_server}|{is_join}|{is_leave}"
                 mid = "ws-" + hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()[:16]
 
             if not logger_state.mark_seen(mid):
@@ -310,7 +312,7 @@ def handle_ws_event(direction: str, event: str, data, my_id: str = ""):
             room_name = logger_state.get_room_name(rid if rid is not None else logger_state.current_room_id)
 
             logger_state.log_chat_event({
-                "ts": datetime.now().isoformat(),  # Aktualisiert auf ISO Format
+                "ts": datetime.now().isoformat(),
                 "dir": "in",
                 "room_id": int(rid) if rid is not None else logger_state.current_room_id,
                 "room_name": room_name,
@@ -374,7 +376,7 @@ def get_state():
 @app.route('/api/action', methods=['POST'])
 def handle_action():
     global last_ping_time
-    last_ping_time = time.time()  # Aktualisiert ebenfalls den Monitor
+    last_ping_time = time.time()
     data = request.json
     act = data.get('action')
     payload = data.get('payload')
@@ -399,7 +401,7 @@ def handle_action():
 @app.route('/api/ws', methods=['POST'])
 def handle_ws():
     global last_ping_time
-    last_ping_time = time.time()  # Jede WebSocket-Aktivität hält die Verbindung am Leben
+    last_ping_time = time.time()
     data = request.json
     direction = data.get('direction')
     event = data.get('event')
@@ -479,7 +481,6 @@ def connection_monitor():
     global client_connected
     while True:
         time.sleep(2)
-        # Timeout auf massive 20 Sekunden erhöht, um Browser-Drosselung abzufangen!
         if client_connected and (time.time() - last_ping_time > 20):
             client_connected = False
             chat_queue.put({"time": datetime.now().strftime("%H:%M:%S"), "user": "SYSTEM", "text": "Verbindung zum Browser verloren.", "dir": "sys"})
@@ -519,6 +520,10 @@ class ModernTndrHXGUI:
         self.update_banner.bind("<Button-1>", lambda e: webbrowser.open("https://github.com/Asriel-AC/Tndr-HX/releases/latest"))
 
         ttk.Label(self.left_frame, text="⚙️ Einstellungen", style="Header.TLabel").pack(anchor="w", pady=(0, 15))
+        
+        update_btn_frame = ttk.Frame(self.left_frame)
+        update_btn_frame.pack(fill="x", pady=(0, 15))
+        ttk.Button(update_btn_frame, text="🔄 Nach Updates suchen", command=self.manual_update_check).pack(side="left")
         
         self.status_var = tk.StringVar(value="🔴 Offline (Warte auf Browser)")
         self.status_label = ttk.Label(self.left_frame, textvariable=self.status_var, foreground="#ed4245", font=("Segoe UI", 10, "bold"))
@@ -586,6 +591,9 @@ class ModernTndrHXGUI:
         self.chat_text.config(state="disabled")
 
         self.update_gui_loop()
+
+    def manual_update_check(self):
+        threading.Thread(target=check_github_update, args=(True, self.root), daemon=True).start()
 
     def create_toggle(self, text, variable, db_key):
         def on_toggle():
