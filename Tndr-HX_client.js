@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Tndr-HX
 // @namespace    tm-tndr-hx-tools
-// @version      1.1.1
-// @description  Unendlich Emojis, Makros, Emoji-Dieb, Block+, Avatar Steal-To-Vault & Market-Manager. Remote-Controlled by Python.
-// @author       Asriel 
+// @version      1.2.0
+// @description  Unendlich Emojis, Makros, Emoji-Dieb, Block+, Avatar Vault & Profil-Inspektor. Remote-Controlled by Python.
+// @author       Asriel
 // @license      GPL-3.0
 // @match        https://tandro.de/*
 // @run-at       document-start
@@ -21,7 +21,7 @@
   const API_URL = "http://127.0.0.1:54321/api";
   const avatarHost = 'https://cyehwjytcqcjmsvprrgh.supabase.co/storage/v1/object/public/avatars/';
   const emojiHost = 'https://cyehwjytcqcjmsvprrgh.supabase.co/storage/v1/object/public/emojis/';
-  const SCRIPT_VERSION = "1.1.1";
+  const SCRIPT_VERSION = "1.3.1";
 
   function gmGet(k, d) { try { const v = localStorage.getItem(`tm_${k}`); return v ? JSON.parse(v) : d; } catch { return d; } }
   function gmSet(k, v) { try { localStorage.setItem(`tm_${k}`, JSON.stringify(v)); } catch {} }
@@ -30,7 +30,7 @@
       try {
           const raw = localStorage.getItem('auth') || localStorage.getItem('token');
           if (raw) {
-              try { const parsed = JSON.parse(raw); return parsed.token || raw; } 
+              try { const parsed = JSON.parse(raw); return parsed.token || raw; }
               catch(e) { return raw; }
           }
       } catch(e) {}
@@ -57,13 +57,13 @@
     myUserId: null,
     currentRoomId: null,
     wsConnected: false,
-    
+
     panelPos: gmGet('panel_pos', { left: null, top: null }),
     panelSize: gmGet('panel_size', { width: 380, height: 500 }),
     collapsed: gmGet('collapsed', true),
     searchTerm: '',
-    seenEmojis: [], 
-    knownUsers: {}, 
+    seenEmojis: [],
+    knownUsers: {},
     activeTab: 'emojis',
     backendConnected: false,
 
@@ -73,7 +73,7 @@
     blockedUsers: [],
     blockedWords: [],
     alertWords: [],
-    
+
     afkMode: false,
     afkMessage: '',
     afkName: '',
@@ -86,7 +86,7 @@
   const ui = {};
   const savedUploads = gmGet('uploaded_avatars', []);
   const uploadedAvatars = new Set(savedUploads);
-  const seenAvatars = new Set(); 
+  const seenAvatars = new Set();
   let audioCtx = null;
 
   function isNewerVersion(current, latest) {
@@ -104,8 +104,8 @@
   function checkForUpdates(manual = false) {
       const lastCheck = gmGet('last_update_check', 0);
       const now = Date.now();
-      
-      if (!manual && (now - lastCheck < 12 * 60 * 60 * 1000)) return; 
+
+      if (!manual && (now - lastCheck < 12 * 60 * 60 * 1000)) return;
 
       if (manual) showToast('Suche nach Updates...', 'info');
 
@@ -118,7 +118,7 @@
                       const data = JSON.parse(res.responseText);
                       let latestVersion = data.tag_name;
                       if (latestVersion.startsWith('v')) latestVersion = latestVersion.substring(1);
-                      
+
                       gmSet('last_update_check', now);
 
                       if (isNewerVersion(SCRIPT_VERSION, latestVersion)) {
@@ -153,20 +153,11 @@
         clearTimeout(window._saveUploadsTimeout);
         window._saveUploadsTimeout = setTimeout(() => {
             let arr = Array.from(uploadedAvatars);
-            if (arr.length > 2000) arr = arr.slice(-2000); 
+            if (arr.length > 2000) arr = arr.slice(-2000);
             gmSet('uploaded_avatars', arr);
         }, 1000);
     }
   }
-
-  window.addEventListener('TndrHXOwnAvatars', (e) => {
-    try {
-        const avatars = JSON.parse(e.detail);
-        state.ownAvatars = avatars;
-        avatars.forEach(av => { if (av.url) markAvatarAsOwned(av.url); });
-        renderOwnAvatars();
-    } catch(e) {}
-  });
 
   function apiCall(endpoint, method = 'GET', payload = null) {
     return new Promise((resolve, reject) => {
@@ -176,7 +167,7 @@
         headers: { "Content-Type": "application/json" },
         data: payload ? JSON.stringify(payload) : null,
         onload: (res) => {
-          try { resolve(JSON.parse(res.responseText)); } 
+          try { resolve(JSON.parse(res.responseText)); }
           catch(e) { reject("Parse Error"); }
         },
         onerror: reject
@@ -201,144 +192,275 @@
     window.dispatchEvent(new CustomEvent('TndrHXSendWS', { detail: payloadString }));
   }
 
-  window.addEventListener('TndrHXLearnUpload', (e) => {
-      try {
-          const data = JSON.parse(e.detail);
-          gmSet('upload_template', data.template);
-          gmSet('upload_img_key', data.imgKey);
-          gmSet('upload_prefix', data.usePrefix);
-          showToast('✅ Upload-API Format gelernt!', 'success');
-      } catch(e) {}
-  });
+  function escapeHtml(text) {
+      return (text||'').toString().replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
 
-  window.addEventListener('TndrHXLearnSell', (e) => {
+  async function silentUpdateKnownUsers() {
+      let token = getToken();
+      if(!token) return;
       try {
-          const payload = JSON.parse(e.detail);
-          let idKey = null;
-          let priceKey = null;
-          let catKey = null;
-          let idType = 'useravatar_id';
-          
-          for (let key in payload) {
-              const val = payload[key];
-              if (key.toLowerCase().includes('category')) { catKey = key; }
-              
-              if (typeof val === 'number' || (typeof val === 'string' && !isNaN(parseInt(val)))) {
-                  const numVal = parseInt(val);
-                  if (state.ownAvatars && state.ownAvatars.some(a => a.useravatar_id === numVal)) {
-                      idKey = key; idType = 'useravatar_id';
-                  } else if (state.ownAvatars && state.ownAvatars.some(a => a.id === numVal)) {
-                      idKey = key; idType = 'id';
-                  } else if (numVal >= 0 && numVal < 1000000 && (key.toLowerCase().includes('price') || key.toLowerCase().includes('cost') || key.toLowerCase().includes('amount'))) { 
-                      priceKey = key;
-                  } else if (!priceKey && numVal >= 0 && numVal < 1000000 && !key.toLowerCase().includes('category')) {
-                      priceKey = key; 
+          let res = await GM_xmlhttpRequestPromise({
+              method: 'GET',
+              url: 'https://tandro.de/api/users/online',
+              headers: { 'Authorization': `Bearer ${token}` }
+          });
+          let data = JSON.parse(res.responseText);
+          if(data.users) {
+              let changed = false;
+              data.users.forEach(u => {
+                  const id = String(u.id);
+                  // Priorität auf nickname setzen
+                  const name = u.nickname || u.username;
+                  if (id && name && state.knownUsers[id] !== name) {
+                      state.knownUsers[id] = name;
+                      changed = true;
                   }
+              });
+              if (changed && (state.activeTab === 'blocks' || state.activeTab === 'inspector')) {
+                  renderUserDropdown();
               }
           }
-          
-          if (idKey) {
-              gmSet('sell_template', payload); gmSet('sell_id_key', idKey); gmSet('sell_id_type', idType);
-              if (priceKey) gmSet('sell_price_key', priceKey);
-              if (catKey) gmSet('sell_cat_key', catKey);
-              showToast('✅ Auto-Sell Format erfolgreich gelernt!', 'success');
+      } catch(e) {}
+  }
+
+  async function inspectUser(userId) {
+      if (!userId) return showToast('Keine User-ID angegeben!', 'error');
+      let token = getToken();
+      if (!token) return showToast('Fehler: Nicht eingeloggt!', 'error');
+
+      const btn = document.getElementById('tm-inspect-btn');
+      if (btn) btn.textContent = 'Lade Daten...';
+
+      try {
+          // 1. Basis-Informationen (AP, VIP, Avatar)
+          const basicRes = await GM_xmlhttpRequestPromise({
+              method: 'GET',
+              url: `https://tandro.de/api/users/${userId}`,
+              headers: { 'Authorization': `Bearer ${token}` }
+          });
+          const basicData = JSON.parse(basicRes.responseText);
+
+          // 2. Profil-Informationen (Banner, Texte)
+          const profRes = await GM_xmlhttpRequestPromise({
+              method: 'GET',
+              url: `https://tandro.de/api/users/${userId}/profile`,
+              headers: { 'Authorization': `Bearer ${token}` }
+          });
+          const profData = JSON.parse(profRes.responseText);
+
+          renderInspectorResult(basicData, profData);
+      } catch (e) {
+          showToast('Fehler beim Profil-Abruf (API Error)', 'error');
+      }
+
+      if (btn) btn.textContent = '🕵️ Profil inspizieren';
+  }
+
+  function renderInspectorResult(basic, profile) {
+      const resDiv = document.getElementById('tm-inspector-result');
+      if (!resDiv) return;
+
+      const u = basic.user || {};
+      const p = profile.profile || {};
+
+      // Das echte Level ist "schoolrank", Klasse ist "roll"
+      const userLevel = u.schoolrank || u.level || '?';
+      const userClass = u.roll ? ` | Klasse: ${escapeHtml(u.roll)}` : '';
+
+      const avatarUrl = basic.avatarUrl || (u.currentava ? `https://cyehwjytcqcjmsvprrgh.supabase.co/storage/v1/object/public/avatars/${u.currentava}` : '');
+      const headerUrl = p.header_url || '';
+
+      const motto = p.motto || '';
+      const stadt = p.stadt || '';
+      const anime = p.anime || '';
+      const musik = p.musik || '';
+
+      let html = `
+          <div style="position:relative; margin-top:10px; border:1px solid var(--tm-border); border-radius:8px; overflow:hidden; background:var(--tm-surface);">
+              <!-- Header -->
+              <div style="height:90px; background-color:#202225; background-image:url('${escapeHtml(headerUrl)}'); background-size:cover; background-position:center; position:relative; cursor:pointer;" onclick="window.open('${escapeHtml(headerUrl)}', '_blank')" title="Klicken für volle Header-Auflösung">
+                  ${!headerUrl ? '<span style="display:flex;align-items:center;justify-content:center;height:100%;font-size:11px;color:#aaa;">Kein Banner gesetzt</span>' : ''}
+              </div>
+
+              <!-- Avatar & Core Stats -->
+              <div style="padding:10px; position:relative;">
+                  <img src="${escapeHtml(avatarUrl)}" style="width:64px; height:64px; border-radius:8px; border:3px solid var(--tm-bg); position:absolute; top:-32px; left:10px; background:#222; cursor:pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.5);" onclick="window.open('${escapeHtml(avatarUrl)}', '_blank')" title="Avatar speichern">
+
+                  <div style="margin-left:80px; margin-top:-5px;">
+                      <div style="font-weight:bold; font-size:15px; color:white; display:flex; align-items:center; gap:6px;">
+                          ${escapeHtml(u.nickname || u.username || 'Unbekannt')}
+                          <span style="font-size:10px; color:#aaa; font-weight:normal;">(ID: ${u.id})</span>
+                      </div>
+                      <div style="font-size:11px; color:#3ba55c; font-weight:bold; margin-top:2px;">
+                          ${u.is_vip ? '💎 VIP &nbsp; ' : ''}🌟 ${Number(u.activitypoints || 0).toLocaleString('de-DE')} Aktivitätspunkte
+                      </div>
+                      <div style="font-size:10px; color:var(--tm-text-muted); margin-top:2px;">
+                          Level: ${userLevel}${userClass}
+                      </div>
+                  </div>
+
+                  <!-- Text Details -->
+                  <div style="margin-top:20px; font-size:11px; color:var(--tm-text); display:flex; flex-direction:column; gap:6px; background:rgba(0,0,0,0.2); padding:8px; border-radius:6px;">
+                      ${motto ? `<div><strong style="color:var(--tm-primary);">Motto:</strong> ${escapeHtml(motto)}</div>` : ''}
+                      ${stadt ? `<div><strong style="color:var(--tm-primary);">Stadt:</strong> ${escapeHtml(stadt)}</div>` : ''}
+                      ${anime ? `<div><strong style="color:var(--tm-primary);">Anime:</strong> ${escapeHtml(anime)}</div>` : ''}
+                      ${musik ? `<div><strong style="color:var(--tm-primary);">Musik:</strong> ${escapeHtml(musik)}</div>` : ''}
+                      ${(!motto && !stadt && !anime && !musik) ? `<div style="opacity:0.5; text-align:center;">Profil ist komplett leer</div>` : ''}
+                  </div>
+              </div>
+          </div>
+
+          <!-- Raw JSON Expander -->
+          <details style="margin-top:10px; background:var(--tm-surface); border:1px solid var(--tm-border); border-radius:8px; padding:6px 10px;">
+              <summary style="cursor:pointer; font-size:11px; font-weight:500; color:var(--tm-primary); outline:none;">🗄️ Geheime JSON-Daten (Roh)</summary>
+              <textarea class="tm-input" style="width:100%; height:150px; font-size:10px; font-family:monospace; margin-top:8px; background:#1e1e1e; border:none;" readonly>${escapeHtml(JSON.stringify({Basic: basic, Profil: profile}, null, 2))}</textarea>
+          </details>
+      `;
+      resDiv.innerHTML = html;
+      resDiv.style.display = 'flex';
+  }
+
+  async function fetchOwnAvatars() {
+      let token = getToken();
+      if (!token) return;
+      const btn = document.getElementById('tm-fetch-wardrobe');
+      if (btn) btn.textContent = 'Lade...';
+      try {
+          let res = await GM_xmlhttpRequestPromise({
+              method: 'GET',
+              url: 'https://tandro.de/api/avatars/list',
+              headers: { 'Authorization': `Bearer ${token}` }
+          });
+          let data = JSON.parse(res.responseText);
+          if (data.avatars) {
+              state.ownAvatars = data.avatars;
+              data.avatars.forEach(av => { if (av.url) markAvatarAsOwned(av.url); });
+              renderOwnAvatars();
+              showToast('Kleiderschrank synchronisiert!', 'success');
           }
-      } catch(err) {}
-  });
+      } catch(e) { showToast('Fehler beim Laden der Avatare', 'error'); }
+      if (btn) btn.textContent = '👗 Kleiderschrank laden';
+  }
+
+  async function fetchCurrency() {
+      let token = getToken();
+      if (!token) return;
+      try {
+          let res = await GM_xmlhttpRequestPromise({
+              method: 'GET',
+              url: 'https://tandro.de/api/users/currency',
+              headers: { 'Authorization': `Bearer ${token}` }
+          });
+          let data = JSON.parse(res.responseText);
+          const apDisplay = document.getElementById('tm-ap-display');
+          if (apDisplay && data.ap) {
+              apDisplay.textContent = `${parseFloat(data.ap).toLocaleString('de-DE')} AP`;
+          }
+      } catch(e) {}
+  }
+
+  async function scanOnlineUsers() {
+      let token = getToken();
+      if(!token) return showToast('Fehler: Auth-Token fehlt!', 'error');
+
+      const btn = document.getElementById('tm-scan-online');
+      if(btn) btn.textContent = 'Scanne Server...';
+
+      try {
+          let res = await GM_xmlhttpRequestPromise({
+              method: 'GET',
+              url: 'https://tandro.de/api/users/online',
+              headers: { 'Authorization': `Bearer ${token}` }
+          });
+          let data = JSON.parse(res.responseText);
+          let found = 0;
+          if(data.users) {
+              data.users.forEach(u => {
+                  // Merken der IDs nebenbei
+                  const id = String(u.id);
+                  const name = u.nickname || u.username;
+                  if (id && name && state.knownUsers[id] !== name) {
+                      state.knownUsers[id] = name;
+                  }
+
+                  if(u.avatarUrl && !seenAvatars.has(u.avatarUrl) && !uploadedAvatars.has(u.avatarUrl)) {
+                      addAvatarToUI(u.avatarUrl);
+                      found++;
+                  }
+              });
+          }
+          showToast(found > 0 ? `${found} neue Avatare von Online-Usern extrahiert!` : 'Alle Online-Avatare sind bereits im Vault/Menü.', found > 0 ? 'success' : 'info');
+      } catch(e) {
+          showToast('API-Fehler beim Scannen der Online-User.', 'error');
+      }
+      if(btn) btn.textContent = '🌍 Online-User Scannen';
+  }
 
   async function processAndUploadAvatar(url, manualClick = false) {
-    if (uploadedAvatars.has(url)) {
-        if(manualClick) showToast('Diesen Avatar hast du bereits (oder geklaut)!', 'info');
-        return;
-    }
+      if (uploadedAvatars.has(url)) {
+          if(manualClick) showToast('Diesen Avatar hast du bereits (oder geklaut)!', 'info');
+          return;
+      }
 
-    const template = gmGet('upload_template');
-    const imgKey = gmGet('upload_img_key');
-    const usePrefix = gmGet('upload_prefix', true);
-    if (!template || !imgKey) {
-        if(manualClick) showToast('Bitte lade zuerst EINEN Avatar manuell hoch, damit das Skript lernt!', 'error');
-        return;
-    }
+      let token = getToken();
+      let myId = getMyUserIdFromToken() || state.myUserId;
+      if (!token || !myId) return showToast('Fehler: Auth-Daten (Token/ID) nicht gefunden!', 'error');
 
-    let token = getToken();
-    if (!token) return showToast('Fehler: Auth-Token nicht gefunden!', 'error');
+      uploadedAvatars.add(url);
+      if(manualClick) showToast('Lade Avatar in deinen Vault...', 'info');
 
-    uploadedAvatars.add(url);
-    if(manualClick) showToast('Klau-Vorgang läuft...', 'info');
+      try {
+          const res = await GM_xmlhttpRequestPromise({ method: 'GET', url: url, responseType: 'blob' });
+          const blob = res.response;
+          const imageBitmap = await createImageBitmap(blob);
+          const canvas = document.createElement('canvas');
+          canvas.width = imageBitmap.width; canvas.height = imageBitmap.height;
+          canvas.getContext('2d').drawImage(imageBitmap, 0, 0);
 
-    try {
-        const res = await GM_xmlhttpRequestPromise({ method: 'GET', url: url, responseType: 'blob' });
-        const blob = res.response;
-        const imageBitmap = await createImageBitmap(blob);
-        const canvas = document.createElement('canvas');
-        canvas.width = imageBitmap.width; canvas.height = imageBitmap.height;
-        canvas.getContext('2d').drawImage(imageBitmap, 0, 0);
-        
-        let base64 = canvas.toDataURL('image/png');
-        if (!usePrefix) base64 = base64.split(',')[1];
+          let base64 = canvas.toDataURL('image/png');
 
-        let payload = Object.assign({}, template);
-        payload[imgKey] = base64;
-        
-        for (let key in payload) {
-            if (key.toLowerCase().includes('cat')) {
-                payload[key] = Array.isArray(template[key]) ? [20] : 20; 
-            }
-        }
+          let payload = {
+              image: base64,
+              userId: myId
+          };
 
-        const upRes = await GM_xmlhttpRequestPromise({
-            method: 'POST',
-            url: 'https://tandro.de/api/avatars/upload',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-            data: JSON.stringify(payload)
-        });
+          const upRes = await GM_xmlhttpRequestPromise({
+              method: 'POST',
+              url: 'https://tandro.de/api/avatars/upload',
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+              data: JSON.stringify(payload)
+          });
 
-        if (upRes.status >= 200 && upRes.status < 300) {
-            showToast('🥷 Avatar erfolgreich in den Vault geklaut!', 'success');
-            markAvatarAsOwned(url);
-        } else {
-            showToast(`Upload fehlgeschlagen: HTTP ${upRes.status}`, 'error');
-            uploadedAvatars.delete(url); 
-        }
-    } catch (e) {
-        showToast('Fehler beim Auto-Upload.', 'error');
-        uploadedAvatars.delete(url);
-    }
+          if (upRes.status >= 200 && upRes.status < 300) {
+              showToast('🥷 Avatar erfolgreich gestohlen und gespeichert!', 'success');
+              markAvatarAsOwned(url);
+              if(state.activeTab === 'market') fetchOwnAvatars();
+          } else {
+              showToast(`Upload API abgelehnt: HTTP ${upRes.status}`, 'error');
+              uploadedAvatars.delete(url);
+          }
+      } catch (e) {
+          showToast('Systemfehler beim Auto-Upload.', 'error');
+          uploadedAvatars.delete(url);
+      }
   }
 
   async function sellAvatar(avatarObj, silent = false) {
-      const template = gmGet('sell_template');
-      const idKey = gmGet('sell_id_key');
-      const priceKey = gmGet('sell_price_key');
-      const catKey = gmGet('sell_cat_key', 'categoryId');
-      const idType = gmGet('sell_id_type', 'useravatar_id');
-      const priceInput = document.getElementById('tm-sell-price');
-      const price = priceInput ? parseInt(priceInput.value) : 10;
-
-      if (!template || !idKey) {
-          if (!silent) showToast('Bitte verkaufe EINEN Avatar manuell, um das API-Format zu lernen!', 'error');
-          return false;
-      }
-
       let token = getToken();
       if (!token) {
           if (!silent) showToast('Auth-Token nicht gefunden!', 'error');
           return false;
       }
 
-      let payload = Object.assign({}, template);
-      payload[idKey] = avatarObj[idType];
-      if (priceKey) payload[priceKey] = isNaN(price) ? 10 : price;
+      const priceInput = document.getElementById('tm-sell-price');
+      const price = priceInput ? parseInt(priceInput.value) : 10;
 
-      if (catKey && payload.hasOwnProperty(catKey)) {
-          payload[catKey] = Array.isArray(template[catKey]) ? [20] : 20; 
-      } else {
-          for (let key in payload) {
-              if (key.toLowerCase().includes('cat')) {
-                  payload[key] = Array.isArray(template[key]) ? [20] : 20;
-              }
-          }
-      }
+      let payload = {
+          useravatar_id: avatarObj.id,
+          price: isNaN(price) ? 10 : price,
+          categoryId: 20
+      };
 
       if (!silent) showToast('Stelle in den Markt...', 'info');
 
@@ -363,7 +485,7 @@
               return false;
           }
       } catch (e) {
-          if (!silent) showToast('Fehler beim Auto-Sell.', 'error');
+          if (!silent) showToast('API-Fehler beim Auto-Sell.', 'error');
           return false;
       }
   }
@@ -371,15 +493,14 @@
   async function fetchMyListings(silent = false) {
       let token = getToken();
       let myId = getMyUserIdFromToken() || state.myUserId;
-
       if (!token || !myId) return;
-      
+
       let allItems = [];
       const btn = document.getElementById('tm-load-market');
       if(btn && !silent) { btn.textContent = 'Scanne Markt...'; btn.disabled = true; }
-      
+
       try {
-          let maxPages = 30; 
+          let maxPages = 30;
           for(let p = 1; p <= maxPages; p++) {
               if(btn && !silent) btn.textContent = `Scanne Seite ${p}...`;
               let res = await GM_xmlhttpRequestPromise({
@@ -387,10 +508,10 @@
                   url: `https://tandro.de/api/marketplace/list?page=${p}&limit=50&sortBy=newest`,
                   headers: { 'Authorization': `Bearer ${token}` }
               });
-              
+
               let data = JSON.parse(res.responseText);
               if (data.totalPages && p === 1) maxPages = Math.min(data.totalPages, 50);
-              
+
               let items = data.avatars || data.items || data.data || [];
               if (!items || items.length === 0) {
                   if (Array.isArray(data)) items = data;
@@ -402,17 +523,17 @@
               }
 
               allItems = allItems.concat(items);
-              if (!items || items.length < 10) break; 
+              if (!items || items.length < 10) break;
           }
-          
+
           state.myListings = allItems.filter(i => {
               let uId = String(i.authorid || i.userId || i.user_id || i.sellerId || i.seller_id || (i.user && i.user.id) || (i.seller && i.seller.id) || "");
               return uId === String(myId);
           });
-          
+
           if(!silent) renderMyListings();
           if(btn && !silent) { btn.textContent = '🔄 Angebote laden'; btn.disabled = false; }
-          
+
           if (!silent) {
               if (state.myListings.length > 0) {
                   showToast(`${state.myListings.length} eigene Angebote gefunden!`, 'success');
@@ -470,7 +591,7 @@
       }
 
       if (btn && !silent) { btn.disabled = false; btn.textContent = '🚀 Alle Pushen'; btn.style.opacity = '1'; }
-      
+
       if (successCount > 0) {
           showToast(silent ? `🤖 Auto-Market: ${successCount} Angebote erfolgreich gepusht!` : `${successCount} Angebote gepusht!`, 'success');
           if (!silent) setTimeout(() => fetchMyListings(true), 1000);
@@ -500,24 +621,6 @@
       window.fetch = async function(...args) {
           const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url ? args[0].url : '');
           const opts = args[1] || {};
-          
-          if (url.includes('/api/avatars/upload') && opts.method && opts.method.toUpperCase() === 'POST') {
-              try {
-                  const bodyObj = JSON.parse(opts.body);
-                  let imgKey = 'image';
-                  let usePrefix = true;
-                  for (let k in bodyObj) {
-                      if (typeof bodyObj[k] === 'string' && bodyObj[k].length > 1000) {
-                          imgKey = k; usePrefix = bodyObj[k].startsWith('data:'); bodyObj[k] = ""; break;
-                      }
-                  }
-                  window.dispatchEvent(new CustomEvent('TndrHXLearnUpload', { detail: JSON.stringify({ template: bodyObj, imgKey: imgKey, usePrefix: usePrefix })}));
-              } catch(e) {}
-          }
-
-          if (url.includes('/api/marketplace/sell') && opts.method && opts.method.toUpperCase() === 'POST') {
-              try { window.dispatchEvent(new CustomEvent('TndrHXLearnSell', { detail: opts.body })); } catch(e) {}
-          }
 
           const response = await origFetch.apply(this, args);
           if (url.includes('/api/avatars') && (!opts.method || opts.method.toUpperCase() === 'GET')) {
@@ -535,21 +638,6 @@
       const origSend = XMLHttpRequest.prototype.send;
       XMLHttpRequest.prototype.open = function(method, url) { this._url = url; this._method = method; return origOpen.apply(this, arguments); };
       XMLHttpRequest.prototype.send = function(body) {
-          if (this._url && this._url.includes('/api/avatars/upload') && this._method && this._method.toUpperCase() === 'POST' && typeof body === 'string') {
-              try {
-                  const bodyObj = JSON.parse(body);
-                  let imgKey = 'image'; let usePrefix = true;
-                  for (let k in bodyObj) {
-                      if (typeof bodyObj[k] === 'string' && bodyObj[k].length > 1000) { imgKey = k; usePrefix = bodyObj[k].startsWith('data:'); bodyObj[k] = ""; break; }
-                  }
-                  window.dispatchEvent(new CustomEvent('TndrHXLearnUpload', { detail: JSON.stringify({ template: bodyObj, imgKey: imgKey, usePrefix: usePrefix })}));
-              } catch(e) {}
-          }
-
-          if (this._url && this._url.includes('/api/marketplace/sell') && this._method && this._method.toUpperCase() === 'POST' && typeof body === 'string') {
-              try { window.dispatchEvent(new CustomEvent('TndrHXLearnSell', { detail: body })); } catch(e) {}
-          }
-
           this.addEventListener('load', function() {
               if (this._url && this._url.includes('/api/avatars') && this._method && this._method.toUpperCase() === 'GET') {
                   try {
@@ -588,8 +676,8 @@
           if (obj.text !== undefined && hasBlockedWord(obj.text)) { obj.text = ''; modified = true; }
         }
 
-        for (const key in obj) { 
-          if (typeof obj[key] === 'object') { if (scrubData(obj[key])) modified = true; } 
+        for (const key in obj) {
+          if (typeof obj[key] === 'object') { if (scrubData(obj[key])) modified = true; }
         }
         return modified;
       };
@@ -599,7 +687,7 @@
           if (!eventDataString.startsWith('42')) return false;
           const parsed = JSON.parse(eventDataString.substring(2));
           if (!Array.isArray(parsed) || parsed.length < 2) return false;
-          
+
           const eventName = parsed[0];
           const eventData = parsed[1];
 
@@ -615,7 +703,7 @@
       const OrigWebSocket = window.WebSocket;
       window.WebSocket = function(...args) {
         const ws = new OrigWebSocket(...args);
-        window.__tndrhxWS = ws; 
+        window.__tndrhxWS = ws;
         ws.addEventListener('open', () => window.dispatchEvent(new CustomEvent('TndrHXWSState', {detail: 'open'})));
         ws.addEventListener('close', () => window.dispatchEvent(new CustomEvent('TndrHXWSState', {detail: 'close'})));
 
@@ -641,7 +729,7 @@
             const wrapped = function(event) {
               if (typeof event.data === 'string' && event.data.startsWith('42')) {
                 const result = processAndCheckDrop(event.data);
-                if (result === true) return; 
+                if (result === true) return;
                 if (typeof result === 'string') Object.defineProperty(event, 'data', { value: result, writable: false });
               }
               return listener.call(this, event);
@@ -685,9 +773,77 @@
     }
   }
 
+  function injectInspectorButton(rootNode) {
+      if (!rootNode || !rootNode.querySelectorAll) return;
+      try {
+          const nameEls = rootNode.querySelectorAll('.username, .name, .sender, span.font-medium');
+          nameEls.forEach(el => {
+              if (el.dataset.tmInspected) return;
+              el.dataset.tmInspected = 'true';
+
+              // Sauberes Extrahieren des Textes ohne Child-Elemente
+              const userName = Array.from(el.childNodes)
+                  .filter(node => node.nodeType === Node.TEXT_NODE)
+                  .map(node => node.textContent)
+                  .join('').trim();
+
+              if (!userName) return;
+
+              const btn = document.createElement('span');
+              btn.innerHTML = '🕵️‍♀️';
+              btn.style.cssText = 'cursor:pointer; font-size:12px; margin-left:4px; opacity:0; transition:opacity 0.2s; filter:grayscale(0.5);';
+              btn.title = `Profil von ${escapeHtml(userName)} inspizieren`;
+
+              const parentMsg = el.closest('[id^="message-"], .message, .chat-message, .log-item');
+              if (parentMsg) {
+                  parentMsg.addEventListener('mouseenter', () => btn.style.opacity = '1');
+                  parentMsg.addEventListener('mouseleave', () => btn.style.opacity = '0');
+              } else {
+                  el.addEventListener('mouseenter', () => btn.style.opacity = '1');
+                  el.addEventListener('mouseleave', () => btn.style.opacity = '0');
+              }
+
+              btn.onmouseenter = () => btn.style.filter = 'grayscale(0)';
+              btn.onmouseleave = () => btn.style.filter = 'grayscale(0.5)';
+
+              btn.onclick = (e) => {
+                  e.preventDefault(); e.stopPropagation();
+                  let targetId = null;
+
+                  // Fehler-Tolerante Suche: Ignoriert Groß-/Kleinschreibung und Leerzeichen
+                  const searchName = userName.toLowerCase().trim();
+                  for (const [id, name] of Object.entries(state.knownUsers)) {
+                      if (name.toLowerCase().trim() === searchName) {
+                          targetId = id;
+                          break;
+                      }
+                  }
+
+                  if (targetId) {
+                      const tab = document.querySelector('.tm-tab[data-tab="inspector"]');
+                      if(tab) tab.click();
+                      const sel = document.getElementById('tm-inspector-user-select');
+                      if(sel) sel.value = targetId;
+                      document.getElementById('tm-inspector-user-type').value = 'user_list';
+                      document.getElementById('tm-inspector-user-select').style.display = 'block';
+                      document.getElementById('tm-inspector-user-id').style.display = 'none';
+
+                      inspectUser(targetId);
+
+                      if(state.collapsed) document.getElementById('tm-collapsed-btn').click();
+                  } else {
+                      showToast(`User-ID für ${userName} noch nicht geladen!`, 'error');
+                  }
+              };
+
+              el.parentNode.insertBefore(btn, el.nextSibling);
+          });
+      } catch(e) {}
+  }
+
   function handleSeenEmojiInDOM(img) {
     const url = img.src;
-    const msgEl = img.closest('[data-user-id], .message, .chat-message, .chat-line, .speech-bubble, .message-content');
+    const msgEl = img.closest('[id^="message-"], [data-user-id], .message, .chat-message, .chat-line, .speech-bubble, .message-content, .msg, .log-item, .chat-log, .chat');
     if (!msgEl) return;
 
     if (img.parentNode && !img.parentNode.classList.contains('tm-emoji-wrapper')) {
@@ -724,8 +880,13 @@
     if (!state.seenEmojis.some(em => em.url === url) && !state.localEmojis.some(em => em.dataUrl === url)) {
         let sender = 'Unbekannt';
         if (msgEl) {
-            const nameEl = msgEl.querySelector('.username, .name, .sender');
-            if (nameEl) sender = nameEl.textContent.trim();
+            const nameEl = msgEl.querySelector('.username, .name, .sender, span.font-medium');
+            if (nameEl) {
+                sender = Array.from(nameEl.childNodes)
+                    .filter(node => node.nodeType === Node.TEXT_NODE)
+                    .map(node => node.textContent)
+                    .join('').trim();
+            }
         }
         state.seenEmojis.unshift({ url: url, sender: sender });
         if (state.seenEmojis.length > 50) state.seenEmojis.pop();
@@ -734,9 +895,9 @@
   }
 
   function addAvatarToUI(url) {
-    if (uploadedAvatars.has(url)) return; 
+    if (uploadedAvatars.has(url)) return;
     if (seenAvatars.has(url)) return;
-    
+
     seenAvatars.add(url);
     if (seenAvatars.size > 500) { const it = seenAvatars.values(); seenAvatars.delete(it.next().value); }
 
@@ -762,7 +923,7 @@
               if (a.dataset.tmEmbedded) return;
               const url = a.href;
               if (!url) return;
-              
+
               const isImage = /\.(jpeg|jpg|gif|png|webp)(\?.*)?$/i.test(url);
               if (isImage) {
                   a.dataset.tmEmbedded = 'true';
@@ -783,30 +944,32 @@
     const observer = new MutationObserver(mutations => {
       for (const m of mutations) {
         for (const node of m.addedNodes) {
-          if (node.nodeType !== 1) continue; 
+          if (node.nodeType !== 1) continue;
           if (node.id === 'tm-emoji-panel' || node.closest('#tm-emoji-panel')) continue;
-          
+
           if (node.tagName === 'IMG') {
               if (node.src.startsWith(avatarHost)) addAvatarToUI(node.src);
               if (node.src.startsWith(emojiHost)) handleSeenEmojiInDOM(node);
           }
           else if (node.querySelectorAll) {
-            node.querySelectorAll('img').forEach(img => { 
-                if (img.src.startsWith(avatarHost)) addAvatarToUI(img.src); 
+            node.querySelectorAll('img').forEach(img => {
+                if (img.src.startsWith(avatarHost)) addAvatarToUI(img.src);
                 if (img.src.startsWith(emojiHost)) handleSeenEmojiInDOM(img);
             });
             embedImageLinks(node);
+            injectInspectorButton(node);
           }
         }
       }
     });
     observer.observe(document.body, { childList: true, subtree: true });
-    
-    document.querySelectorAll('img').forEach(img => { 
-        if (img.src.startsWith(avatarHost)) addAvatarToUI(img.src); 
+
+    document.querySelectorAll('img').forEach(img => {
+        if (img.src.startsWith(avatarHost)) addAvatarToUI(img.src);
         if (img.src.startsWith(emojiHost)) handleSeenEmojiInDOM(img);
     });
     embedImageLinks(document.body);
+    injectInspectorButton(document.body);
   }
 
   window.addEventListener('TndrHXWSState', (e) => { state.wsConnected = (e.detail === 'open'); updateStatus(); });
@@ -819,7 +982,7 @@
         if (payload.event === 'existingUsers' && payload.data?.myself) {
             state.myUserId = String(payload.data.myself.id || payload.data.myself.userId);
             state.currentRoomId = payload.data.myself.currentRoomId;
-            if (payload.data.myself.avatarUrl) markAvatarAsOwned(payload.data.myself.avatarUrl); 
+            if (payload.data.myself.avatarUrl) markAvatarAsOwned(payload.data.myself.avatarUrl);
             updateStatus();
         }
         if (payload.event === 'userJoinedUserList' && payload.data) {
@@ -840,7 +1003,8 @@
         const extract = (u) => {
           if (!u || typeof u !== 'object') return;
           const id = String(u.userId || u.id);
-          const name = u.username || u.name || u.nickname || u.senderName;
+          // FIX: Nickname Priorität, da dieser mit Sonderzeichen gerendert wird
+          const name = u.nickname || u.senderName || u.username || u.name;
           if (id && id !== 'undefined' && name && state.knownUsers[id] !== name) {
             state.knownUsers[id] = name; changed = true;
           }
@@ -851,7 +1015,7 @@
           else if (Array.isArray(payload.data.userList)) payload.data.userList.forEach(extract);
           else extract(payload.data);
         }
-        if (changed && state.activeTab === 'blocks') renderUserDropdown();
+        if (changed && (state.activeTab === 'blocks' || state.activeTab === 'inspector')) renderUserDropdown();
     }
 
     apiCall('/ws', 'POST', { direction: payload.direction, event: payload.event, data: payload.data, myId: state.myUserId })
@@ -865,8 +1029,8 @@
       const osc = audioCtx.createOscillator();
       const gain = audioCtx.createGain();
       osc.connect(gain); gain.connect(audioCtx.destination);
-      osc.type = 'sine'; osc.frequency.setValueAtTime(880, audioCtx.currentTime); 
-      osc.frequency.exponentialRampToValueAtTime(440, audioCtx.currentTime + 0.3); 
+      osc.type = 'sine'; osc.frequency.setValueAtTime(880, audioCtx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(440, audioCtx.currentTime + 0.3);
       gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
       osc.start(); gain.gain.exponentialRampToValueAtTime(0.00001, audioCtx.currentTime + 0.3);
       osc.stop(audioCtx.currentTime + 0.3);
@@ -885,7 +1049,7 @@
         img.onload = () => {
           const canvas = document.createElement('canvas');
           let width = img.width, height = img.height;
-          if (width > height) { if (width > maxSize) { height *= maxSize / width; width = maxSize; } } 
+          if (width > height) { if (width > maxSize) { height *= maxSize / width; width = maxSize; } }
           else { if (height > maxSize) { width *= maxSize / height; height = maxSize; } }
           canvas.width = width; canvas.height = height;
           canvas.getContext('2d').drawImage(img, 0, 0, width, height);
@@ -916,9 +1080,12 @@
     if (!id || !state.wsConnected || !state.myUserId || !state.currentRoomId) return showToast('Fehler: Nicht verbunden!', 'error');
     const emoji = state.localEmojis.find(e => String(e.id) === id);
     if (!emoji) return false;
+
+    const isAnimatedGif = emoji.dataUrl.includes('image/gif') || emoji.dataUrl.toLowerCase().includes('.gif');
+
     const payload = {
-      id: `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`, room: parseInt(state.currentRoomId), userId: parseInt(state.myUserId), 
-      message: `:${id}: `, speechBubbleText: '', mentions: [], replyTo: null, isEmoji: true, isGif: false, emojiUrl: emoji.dataUrl
+      id: `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`, room: parseInt(state.currentRoomId), userId: parseInt(state.myUserId),
+      message: `:${id}: `, speechBubbleText: '', mentions: [], replyTo: null, isEmoji: true, isGif: isAnimatedGif, emojiUrl: emoji.dataUrl
     };
     emitWS('42' + JSON.stringify(['newMessage', payload]));
     showToast(`Gesendet :${id}:`, 'success');
@@ -927,7 +1094,7 @@
   function sendText(text) {
     if (!text || !state.wsConnected || !state.myUserId || !state.currentRoomId) return false;
     const payload = {
-      id: `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`, room: parseInt(state.currentRoomId), userId: parseInt(state.myUserId), 
+      id: `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`, room: parseInt(state.currentRoomId), userId: parseInt(state.myUserId),
       message: text, speechBubbleText: '', mentions: [], replyTo: null, isEmoji: false, isGif: false
     };
     emitWS('42' + JSON.stringify(['newMessage', payload]));
@@ -950,7 +1117,7 @@
     ui.status.textContent = state.wsConnected ? `🟢 ${room}` : '🔴 Tandro Offline';
     ui.backendStatus.textContent = state.backendConnected ? '🐍 Backend OK' : '🐍 Backend Offline';
     ui.backendStatus.style.color = state.backendConnected ? '#3ba55c' : '#ed4245';
-    
+
     const warningBanner = document.getElementById('tm-backend-warning');
     if (warningBanner) {
       warningBanner.style.display = state.backendConnected ? 'none' : 'block';
@@ -964,7 +1131,7 @@
           if (!state.backendConnected) { state.backendConnected = true; updateStatus(); showToast("Verbindung zum Backend hergestellt!", "success"); }
           try {
               const data = await apiCall('/state', 'GET');
-              
+
               if (data.actions && data.actions.length > 0) {
                   data.actions.forEach(act => {
                       if (act.type === 'play_alert') playAlertSound();
@@ -975,7 +1142,7 @@
                       }
                   });
               }
-              
+
               delete data.actions;
               Object.assign(state, data);
               renderGallery(); renderMacros(); renderBlocks();
@@ -988,8 +1155,6 @@
     }, 2500);
   }
 
-  function escapeHtml(text) { return (text||'').toString().replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
-
   function renderEmojiDieb() {
     const container = document.getElementById('tm-diebesgut-container');
     const list = document.getElementById('tm-diebesgut');
@@ -997,7 +1162,7 @@
     if (state.seenEmojis.length === 0) { container.style.display = 'none'; return; }
     container.style.display = 'flex';
     list.innerHTML = '';
-    
+
     for (const em of state.seenEmojis) {
       const wrap = document.createElement('div');
       wrap.style.cssText = 'min-width:48px;height:48px;position:relative;background:rgba(0,0,0,0.3);border-radius:6px;cursor:pointer;flex-shrink:0;border:1px solid rgba(255,255,255,0.1);';
@@ -1014,11 +1179,11 @@
     const term = state.searchTerm.toLowerCase();
     const emojis = state.localEmojis.filter(e => String(e.id).includes(term) || (e.name && e.name.toLowerCase().includes(term)));
     ui.gallery.innerHTML = '';
-    
+
     if (state.localEmojis.length === 0) {
       ui.gallery.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:30px;opacity:0.5;">✨ Ziehe Bilder hierher</div>'; return;
     }
-    
+
     for (const emoji of emojis) {
       const card = document.createElement('div'); card.className = 'tm-card'; card.title = `Name: ${escapeHtml(emoji.name)}\nID: ${escapeHtml(emoji.id)}`;
       card.innerHTML = `
@@ -1045,10 +1210,10 @@
       if (!list) return;
       list.innerHTML = '';
       if (!state.ownAvatars || state.ownAvatars.length === 0) {
-          list.innerHTML = '<div style="opacity:0.5;font-size:11px;padding:4px;">Öffne deinen Kleiderschrank im Chat, um deine Avatare hier zu laden.</div>';
+          list.innerHTML = '<div style="opacity:0.5;font-size:11px;padding:4px;">Klicke auf \'Kleiderschrank laden\', um deine Avatare zu sehen.</div>';
           return;
       }
-      
+
       state.ownAvatars.forEach(av => {
           if(!av.url) return;
           const img = document.createElement('img');
@@ -1077,18 +1242,18 @@
           const id = item.id;
           const price = item.price || item.costs || item.amount || "?";
           const imgUrl = item.watermarkedurl || item.url || (item.avatar && item.avatar.url) || (item.useravatar && item.useravatar.url) || item.image || "";
-          
+
           let timeStr = "";
           if (item.timestamp) {
               const expirationTime = item.timestamp + (7 * 24 * 60 * 60 * 1000);
               const diff = expirationTime - Date.now();
-              
+
               if (diff > 0) {
                   const d = Math.floor(diff / (1000 * 60 * 60 * 24));
                   const h = Math.floor((diff / (1000 * 60 * 60)) % 24);
                   const m = Math.floor((diff / 1000 / 60) % 60);
                   const s = Math.floor((diff / 1000) % 60);
-                  
+
                   if (d > 0) timeStr = `${d}T ${h}h ${m}m ${s}s`;
                   else if (h > 0) timeStr = `${h}h ${m}m ${s}s`;
                   else if (m > 0) timeStr = `${m}m ${s}s`;
@@ -1100,9 +1265,9 @@
 
           const div = document.createElement('div');
           div.style.cssText = 'display:flex;align-items:center;justify-content:space-between;background:rgba(0,0,0,0.2);padding:4px 8px;border-radius:6px;margin-bottom:4px;border:1px solid rgba(255,255,255,0.05);';
-          
+
           const imgHtml = imgUrl ? '<img src="' + escapeHtml(imgUrl) + '" style="width:32px;height:32px;border-radius:4px;object-fit:cover;">' : '<div style="width:32px;height:32px;background:#333;border-radius:4px;"></div>';
-          
+
           div.innerHTML = `
               <div style="display:flex;align-items:center;gap:8px;">
                   ${imgHtml}
@@ -1161,37 +1326,37 @@
       const row = document.createElement('div'); row.style.cssText = 'display:flex;gap:4px;margin-top:4px;';
       const sendBtn = document.createElement('button'); sendBtn.className = 'tm-btn tm-btn-primary'; sendBtn.style.flex = '1'; sendBtn.textContent = '📤 In Chat senden';
       sendBtn.onclick = () => sendText(m.text);
-      const delBtn = document.createElement('button'); delBtn.className = 'tm-btn tm-btn-danger'; delBtn.style.padding = '0 10px'; delBtn.textContent = '🗑️';
+      const delBtn = document.createElement('button'); delBtn.className = 'tm-btn tm-btn-danger'; delBtn.style.padding = '0 10px'; delBtn.textContent = '🗑️️';
       delBtn.onclick = () => { state.macros = state.macros.filter(x => String(x.id) !== String(m.id)); renderMacros(); apiCall('/action', 'POST', {action: 'remove_macro', payload: m.id}); };
       row.appendChild(sendBtn); row.appendChild(delBtn); card.appendChild(row); list.appendChild(card);
     }
   }
 
   function renderBlocks() {
-    const list = document.getElementById('tm-block-list'); 
+    const list = document.getElementById('tm-block-list');
     if (!list) return;
     list.innerHTML = '';
-    if (state.blockedUsers.length === 0 && state.blockedWords.length === 0) { 
-      list.innerHTML = '<div style="opacity:0.5;text-align:center;padding:20px;">Die Blockliste ist leer.</div>'; 
-      return; 
+    if (state.blockedUsers.length === 0 && state.blockedWords.length === 0) {
+      list.innerHTML = '<div style="opacity:0.5;text-align:center;padding:20px;">Die Blockliste ist leer.</div>';
+      return;
     }
     const createItem = (type, value) => {
-      const div = document.createElement('div'); 
+      const div = document.createElement('div');
       div.style.cssText = 'display:flex;justify-content:space-between;align-items:center;background:var(--tm-surface);padding:8px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.05);margin-bottom:4px;';
-      let disp = escapeHtml(value); 
+      let disp = escapeHtml(value);
       if (type === 'User' && state.knownUsers[value]) disp = `${escapeHtml(state.knownUsers[value])} (${escapeHtml(value)})`;
       div.innerHTML = `<div><span style="opacity:0.6;font-size:11px;margin-right:6px;background:rgba(0,0,0,0.3);padding:2px 4px;border-radius:4px;">${type}</span><span style="font-weight:500;">${disp}</span></div>`;
-      const delBtn = document.createElement('button'); 
-      delBtn.className = 'tm-btn tm-btn-danger'; 
-      delBtn.style.padding = '4px 8px'; 
+      const delBtn = document.createElement('button');
+      delBtn.className = 'tm-btn tm-btn-danger';
+      delBtn.style.padding = '4px 8px';
       delBtn.textContent = 'Freigeben';
       delBtn.onclick = () => {
         if (type === 'User') { state.blockedUsers = state.blockedUsers.filter(u => String(u) !== String(value)); updateSetting('blockedUsers', state.blockedUsers); }
         if (type === 'Wort') { state.blockedWords = state.blockedWords.filter(w => w !== value); updateSetting('blockedWords', state.blockedWords); }
-        renderBlocks(); 
+        renderBlocks();
         window.dispatchEvent(new CustomEvent('TndrHXSyncBlocks', { detail: { users: state.blockedUsers, words: state.blockedWords } }));
       };
-      div.appendChild(delBtn); 
+      div.appendChild(delBtn);
       list.appendChild(div);
     };
     state.blockedUsers.forEach(u => createItem('User', u));
@@ -1199,12 +1364,20 @@
   }
 
   function renderUserDropdown() {
-    const select = document.getElementById('tm-block-user-select'); if (!select) return;
-    const currentVal = select.value; select.innerHTML = '';
-    const users = Object.entries(state.knownUsers);
-    if (users.length === 0) { select.innerHTML = '<option value="">(Bisher keine anderen User erkannt)</option>'; return; }
-    for (const [id, name] of users) { const opt = document.createElement('option'); opt.value = escapeHtml(id); opt.textContent = `${escapeHtml(name)} (ID: ${escapeHtml(id)})`; select.appendChild(opt); }
-    if (currentVal && state.knownUsers[currentVal]) select.value = currentVal;
+    const selects = [document.getElementById('tm-block-user-select'), document.getElementById('tm-inspector-user-select')];
+    selects.forEach(select => {
+        if (!select) return;
+        const currentVal = select.value; select.innerHTML = '';
+        const users = Object.entries(state.knownUsers);
+        if (users.length === 0) { select.innerHTML = '<option value="">(Bisher keine User erkannt)</option>'; return; }
+        for (const [id, name] of users) {
+            const opt = document.createElement('option');
+            opt.value = escapeHtml(id);
+            opt.textContent = `${escapeHtml(name)} (ID: ${escapeHtml(id)})`;
+            select.appendChild(opt);
+        }
+        if (currentVal && state.knownUsers[currentVal]) select.value = currentVal;
+    });
   }
 
   function createUI() {
@@ -1228,9 +1401,9 @@
     const panel = document.createElement('div');
     panel.id = 'tm-emoji-panel';
     let { left, top } = state.panelPos;
-    if (typeof left === 'number' && typeof top === 'number') { panel.style.left = Math.max(0, Math.min(left, window.innerWidth - 100)) + 'px'; panel.style.top = Math.max(0, Math.min(top, window.innerHeight - 100)) + 'px'; } 
+    if (typeof left === 'number' && typeof top === 'number') { panel.style.left = Math.max(0, Math.min(left, window.innerWidth - 100)) + 'px'; panel.style.top = Math.max(0, Math.min(top, window.innerHeight - 100)) + 'px'; }
     else { panel.style.right = '20px'; panel.style.bottom = '20px'; }
-    panel.style.width = Math.max(280, state.panelSize.width) + 'px'; panel.style.height = Math.max(300, state.panelSize.height) + 'px';
+    panel.style.width = Math.max(280, state.panelSize.width) + 'px'; panel.style.height = Math.max(450, state.panelSize.height) + 'px';
 
     panel.innerHTML = `
       <div id="tm-dropzone"><span style="font-size:32px;margin-bottom:10px;">📥</span>Bilder hier ablegen</div>
@@ -1255,6 +1428,7 @@
         <div class="tm-tab active" data-tab="emojis">🖼️ Emojis</div>
         <div class="tm-tab" data-tab="avatars">🥷 Klauen</div>
         <div class="tm-tab" data-tab="market">💰 Markt</div>
+        <div class="tm-tab" data-tab="inspector">🕵️ Profil</div>
         <div class="tm-tab" data-tab="macros">📝 Makros</div>
         <div class="tm-tab" data-tab="blocks">🚷 Block+</div>
       </div>
@@ -1287,9 +1461,9 @@
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
             <div>
                 <div style="font-weight:600;color:var(--tm-primary);margin-bottom:4px;">🥷 Geklaute Avatare (In Vault speichern)</div>
-                <div style="font-size:11px;color:var(--tm-text-muted);">Einmalig einen manuell hochladen, damit das Skript die API lernt. Klicke dann hier auf gefundene Avatare im Chat.</div>
+                <div style="font-size:11px;color:var(--tm-text-muted);">Die API ist voll integriert. Klicke einfach hier auf gefundene Avatare im Chat, um sie zu speichern.</div>
             </div>
-            <button id="tm-scan-avatars" class="tm-btn tm-btn-outline" style="padding:4px 8px;font-size:11px;white-space:nowrap;margin-left:8px;">🔄 Chat Scannen</button>
+            <button id="tm-scan-online" class="tm-btn tm-btn-outline" style="padding:4px 8px;font-size:11px;white-space:nowrap;margin-left:8px;">🌍 Online-User Scannen</button>
         </div>
         <div id="tm-avatar-list" style="display:flex;flex-wrap:wrap;gap:8px;flex:1;min-height:0;overflow-y:auto;align-content:start;margin-bottom:4px;background:rgba(0,0,0,0.2);padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.05);"></div>
       </div>
@@ -1298,14 +1472,18 @@
         <div style="background:rgba(0,0,0,0.2);padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.05);margin-bottom:14px;">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
               <div style="font-weight:600;color:#3ba55c;">💰 Schnellverkauf</div>
+              <div style="font-weight:bold;color:var(--tm-primary);font-size:12px;" id="tm-ap-display">Lade AP...</div>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
               <div style="display:flex;align-items:center;gap:6px;">
                 <span style="font-size:11px;">Preis:</span>
                 <input type="number" id="tm-sell-price" class="tm-input" value="10" style="width:60px;padding:4px;height:24px;text-align:center;">
               </div>
+              <button id="tm-fetch-wardrobe" class="tm-btn tm-btn-outline" style="padding:2px 8px;font-size:11px;">👗 Kleiderschrank laden</button>
             </div>
             <button id="tm-sell-all" class="tm-btn tm-btn-primary" style="width:100%;margin-bottom:8px;">🛍️ Alle eigenen Avatare verkaufen</button>
             <div id="tm-own-avatar-list" style="display:flex;flex-wrap:wrap;gap:8px;overflow-y:auto;max-height:120px;align-content:start;">
-               <div style="opacity:0.5;font-size:11px;padding:4px;">Öffne deinen Kleiderschrank im Chat, um deine Avatare hier zu laden.</div>
+               <div style="opacity:0.5;font-size:11px;padding:4px;">Klicke auf 'Kleiderschrank laden', um deine Avatare anzuzeigen.</div>
             </div>
         </div>
 
@@ -1321,6 +1499,22 @@
                 <div style="opacity:0.5;font-size:11px;padding:4px;text-align:center;">Klicke auf 'Laden', um den Markt zu scannen.</div>
             </div>
         </div>
+      </div>
+
+      <!-- Profil-Inspektor Tab -->
+      <div id="tab-inspector" class="tm-tab-content">
+        <div style="background:var(--tm-surface);border:1px solid var(--tm-border);padding:10px;border-radius:10px;margin-bottom:14px;">
+          <select id="tm-inspector-user-type" class="tm-input" style="margin-bottom:8px; padding:8px;">
+            <option value="user_list">👤 Aus Raumliste wählen</option>
+            <option value="user_manual">✍️ Manuelle ID eingeben</option>
+          </select>
+          <div style="display:flex; gap:8px; margin-bottom:8px;">
+            <select id="tm-inspector-user-select" class="tm-input" style="flex:1;"><option value="">(Bisher keine User geredet)</option></select>
+            <input type="text" id="tm-inspector-user-id" class="tm-input" placeholder="ID eingeben..." style="flex:1; display:none;">
+          </div>
+          <button id="tm-inspect-btn" class="tm-btn tm-btn-primary" style="width:100%;">🕵️ Profil inspizieren</button>
+        </div>
+        <div id="tm-inspector-result" style="display:none; flex-direction:column; flex:1; overflow-y:auto; padding-bottom:10px;"></div>
       </div>
 
       <div id="tab-macros" class="tm-tab-content">
@@ -1361,33 +1555,31 @@
       tab.addEventListener('click', () => {
         tabs.forEach(t => t.classList.remove('active')); contents.forEach(c => c.classList.remove('active'));
         tab.classList.add('active'); document.getElementById(`tab-${tab.dataset.tab}`).classList.add('active'); state.activeTab = tab.dataset.tab;
+
         if (state.activeTab === 'emojis') { renderEmojiDieb(); renderGallery(); }
         if (state.activeTab === 'macros') renderMacros();
-        if (state.activeTab === 'blocks') { renderUserDropdown(); renderBlocks(); }
-        if (state.activeTab === 'market') { renderOwnAvatars(); renderMyListings(); }
+        if (state.activeTab === 'blocks' || state.activeTab === 'inspector') renderUserDropdown();
+        if (state.activeTab === 'blocks') renderBlocks();
+        if (state.activeTab === 'market') {
+            renderOwnAvatars();
+            renderMyListings();
+            fetchCurrency();
+            if(state.ownAvatars.length === 0) fetchOwnAvatars();
+        }
       });
     });
 
-    panel.querySelector('#tm-scan-avatars').addEventListener('click', () => {
-        let found = 0;
-        document.querySelectorAll('img').forEach(img => { 
-            if (img.src.startsWith(avatarHost)) {
-                if (!seenAvatars.has(img.src) && !uploadedAvatars.has(img.src)) {
-                    addAvatarToUI(img.src);
-                    found++;
-                }
-            }
-        });
-        showToast(found > 0 ? `${found} neue Avatare im Chat gefunden!` : 'Keine neuen Avatare gefunden.', found > 0 ? 'success' : 'info');
+    panel.querySelector('#tm-scan-online').addEventListener('click', scanOnlineUsers);
+    panel.querySelector('#tm-fetch-wardrobe').addEventListener('click', () => {
+        fetchOwnAvatars();
+        fetchCurrency();
     });
 
     panel.querySelector('#tm-load-market').addEventListener('click', () => fetchMyListings(false));
     panel.querySelector('#tm-extend-market').addEventListener('click', () => extendAllListings(false));
 
     panel.querySelector('#tm-sell-all').addEventListener('click', async (e) => {
-        if (!state.ownAvatars || state.ownAvatars.length === 0) return showToast('Kleiderschrank leer! Bitte im Chat öffnen.', 'error');
-        const template = gmGet('sell_template');
-        if (!template) return showToast('Bitte verkaufe zuerst EINEN Avatar manuell, damit das Skript lernt!', 'error');
+        if (!state.ownAvatars || state.ownAvatars.length === 0) return showToast('Kleiderschrank leer! Bitte zuerst laden.', 'error');
 
         const btn = e.target;
         btn.disabled = true;
@@ -1401,19 +1593,34 @@
         for (const av of avatarsToSell) {
             const success = await sellAvatar(av, true);
             if (success) soldCount++;
-            await new Promise(res => setTimeout(res, 350)); 
+            await new Promise(res => setTimeout(res, 350));
         }
 
         btn.disabled = false;
         btn.textContent = originalText;
         btn.style.opacity = '1';
-        
+
         if (soldCount > 0) {
             showToast(`Erfolgreich ${soldCount} Avatare auf den Markt gestellt! 💰`, 'success');
-            setTimeout(() => fetchMyListings(false), 1000); 
+            setTimeout(() => fetchMyListings(false), 1000);
         } else {
             showToast('Keine Avatare verkauft.', 'error');
         }
+    });
+
+    // Inspector Events
+    const inspectType = panel.querySelector('#tm-inspector-user-type');
+    const inspectUserSelect = panel.querySelector('#tm-inspector-user-select');
+    const inspectTextInput = panel.querySelector('#tm-inspector-user-id');
+
+    inspectType.addEventListener('change', () => {
+      if (inspectType.value === 'user_list') { inspectUserSelect.style.display = 'block'; inspectTextInput.style.display = 'none'; }
+      else { inspectUserSelect.style.display = 'none'; inspectTextInput.style.display = 'block'; }
+    });
+
+    panel.querySelector('#tm-inspect-btn').addEventListener('click', () => {
+      const val = inspectType.value === 'user_list' ? inspectUserSelect.value : inspectTextInput.value.trim();
+      inspectUser(val);
     });
 
     panel.querySelector('#tm-add-macro').addEventListener('click', () => {
@@ -1425,12 +1632,12 @@
 
     const blockType = panel.querySelector('#tm-block-type'); const userSelect = panel.querySelector('#tm-block-user-select'); const textInput = panel.querySelector('#tm-block-input');
     blockType.addEventListener('change', () => {
-      if (blockType.value === 'user_list') { userSelect.style.display = 'block'; textInput.style.display = 'none'; } 
+      if (blockType.value === 'user_list') { userSelect.style.display = 'block'; textInput.style.display = 'none'; }
       else { userSelect.style.display = 'none'; textInput.style.display = 'block'; textInput.placeholder = blockType.value === 'user_manual' ? 'ID eingeben...' : 'Wort eingeben...'; }
     });
     panel.querySelector('#tm-add-block').addEventListener('click', () => {
       const val = blockType.value === 'user_list' ? userSelect.value : textInput.value.trim(); if (!val) return showToast('Eingabe leer!', 'error');
-      if (blockType.value.startsWith('user')) { if (!state.blockedUsers.includes(val)) { state.blockedUsers.push(val); updateSetting('blockedUsers', state.blockedUsers); } } 
+      if (blockType.value.startsWith('user')) { if (!state.blockedUsers.includes(val)) { state.blockedUsers.push(val); updateSetting('blockedUsers', state.blockedUsers); } }
       else { if (!state.blockedWords.includes(val)) { state.blockedWords.push(val); updateSetting('blockedWords', state.blockedWords); } }
       textInput.value = ''; renderBlocks(); window.dispatchEvent(new CustomEvent('TndrHXSyncBlocks', { detail: { users: state.blockedUsers, words: state.blockedWords } })); showToast('Blockiert!', 'success');
     });
@@ -1457,7 +1664,7 @@
     ui.header.addEventListener('mousedown', (e) => { if (e.target.tagName === 'BUTTON') return; isDragging = true; const rect = panel.getBoundingClientRect(); dragOffsetX = e.clientX - rect.left; dragOffsetY = e.clientY - rect.top; e.preventDefault(); });
     window.addEventListener('mousemove', (e) => { if (!isDragging) return; panel.style.left = Math.max(0, Math.min(e.clientX - dragOffsetX, window.innerWidth - panel.offsetWidth)) + 'px'; panel.style.top = Math.max(0, Math.min(e.clientY - dragOffsetY, window.innerHeight - panel.offsetHeight)) + 'px'; panel.style.right = 'auto'; panel.style.bottom = 'auto'; state.panelPos = { left: parseInt(panel.style.left), top: parseInt(panel.style.top) }; });
     window.addEventListener('mouseup', () => { if (isDragging) { isDragging = false; gmSet('panel_pos', state.panelPos); } });
-    
+
     const resizeHandle = panel.querySelector('#tm-resize-handle'); let isResizing = false, startWidth, startHeight, startX, startY;
     resizeHandle.addEventListener('mousedown', (e) => { isResizing = true; startWidth = panel.offsetWidth; startHeight = panel.offsetHeight; startX = e.clientX; startY = e.clientY; e.preventDefault(); e.stopPropagation(); });
     window.addEventListener('mousemove', (e) => { if (!isResizing) return; panel.style.width = Math.max(280, startWidth + (e.clientX - startX)) + 'px'; panel.style.height = Math.max(300, startHeight + (e.clientY - startY)) + 'px'; });
@@ -1487,12 +1694,13 @@
     createUI();
     watchForAvatarsAndChat();
     updateStatus();
-    startHeartbeat(); 
+    startHeartbeat();
     checkForUpdates();
+    silentUpdateKnownUsers();
   }
 
   injectWebSocketInterceptor();
-  if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', boot); } 
+  if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', boot); }
   else { boot(); }
 
 })();
