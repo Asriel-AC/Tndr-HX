@@ -9,8 +9,9 @@ Damit Tndr-HX einwandfrei funktioniert, besteht es immer aus **zwei Teilen**, di
 
 ## Hauptfunktionen im Überblick
 
+* **Profil-Inspektor:** Ein Klick auf das Detektiv-Icon neben einem Namen im Chat zeigt dir sofort alle Account-Daten, das Level, Aktivitätspunkte und das volle Profil-Banner in Originalauflösung an.
 * **Bild-Vorschau im Chat (Auto-Embed):** Das Skript erkennt gepostete Bild-Links (wie z. B. von Discord oder Imgur) und bettet sie sofort als echte, sichtbare Bilder direkt in den Chatverlauf ein. Kein lästiges Klicken auf externe Links mehr!
-* **Avatar-Speicher (Vault-Stealer):** Du siehst einen coolen Avatar im Chat? Klicke ihn im Tndr-HX Menü an, und er wird sofort – ohne störende Hintergrunddaten – in deinen eigenen Tandro-Kleiderschrank kopiert. Über den "Chat Scannen"-Button entgeht dir zudem garantiert kein Avatar mehr.
+* **Avatar-Speicher & Globaler Scanner:** Du siehst einen coolen Avatar im Chat? Klicke ihn im Tndr-HX Menü an, und er wird sofort in deinen eigenen Tandro-Kleiderschrank kopiert. Über den "Online-User Scannen"-Button greifst du zudem blitzschnell auf die Avatare *aller* aktuell eingeloggten Spieler zu.
 * **Emoji-Sammler:** Speichere Emojis von anderen Nutzern direkt aus dem Chatverlauf und nutze sie danach selbst.
 * **Marktplatz-Automat:** Verwalte alle deine Verkäufe an einem Ort. Du kannst einstellen, dass das Hintergrundprogramm deine Angebote vollautomatisch alle paar Minuten auf Platz 1 pusht, selbst wenn du gerade in einem anderen Tab bist (Anti-Throttling schützt die Verbindung dabei vor Abbrüchen).
 * **Erweiterte Blockliste & Makros:** Blockiere nicht nur Nutzer, sondern auch bestimmte nervige Wörter. Speichere dir außerdem fertige Text-Bausteine (Makros) ab, um sie schnell in den Chat zu senden.
@@ -43,27 +44,21 @@ Dieser Teil sorgt dafür, dass das Menü im Chat auftaucht.
 
 Wenn nun das Hintergrundprogramm läuft und du den Tandro-Chat öffnest, bist du verbunden! Fehlt eines von beiden, zeigt dir das System eine große rote Warnmeldung an.
 
-## Der erste Start: Das Skript "anlernen"
-
-Tandro nutzt versteckte Sicherheitsschlüssel, um zu verhindern, dass fremde Programme einfach Bilder in deinen Account laden. Daher muss Tndr-HX einmalig lernen, wie dein persönlicher Account funktioniert.
-
-**So funktioniert der Lern-Vorgang:**
-
-1. Öffne den Tandro-Chat und logge dich ein.
-2. Gehe ganz normal über das Menü des Spiels in deinen Kleiderschrank.
-3. Lade **einmalig einen beliebigen Avatar** über das normale Spiel-Menü hoch. Das gleiche gilt für Verkäufe: Verkaufe einen Avatar manuell.
-4. *Fertig!* Tndr-HX hat diesen Vorgang unsichtbar beobachtet, das Datenformat verstanden und deinen Sicherheitsschlüssel gelernt. Ab jetzt funktioniert der automatische Avatar-Diebstahl und der Schnellverkauf reibungslos.
+*(Hinweis: Durch die direkte API-Integration ist **kein manuelles "Anlernen"** des Skripts mehr nötig. Alle Funktionen sind ab der ersten Sekunde sofort einsatzbereit!)*
 
 ## Kurzanleitung für die wichtigsten Funktionen
+
+**Wie inspiziere ich Profile?**
+Fahre im Chat mit der Maus über den Namen eines Nutzers. Es erscheint ein kleines Detektiv-Symbol (🕵️‍♀️). Ein Klick darauf öffnet automatisch den Tab **Profil** im Panel und zeigt dir alle versteckten Server-Daten, das Profil-Banner und den Kontostand an Aktivitätspunkten dieses Nutzers.
 
 **Wie klaue ich Emojis?**
 Fahre im Chat einfach mit der Maus über ein Emoji, das ein anderer Nutzer gesendet hat. Es taucht ein kleiner Plus-Button auf. Ein Klick darauf speichert das Bild in deinem Tndr-HX Menü.
 
 **Wie klaue ich Avatare?**
-Wechsle in den Tab **Klauen**. Alle Avatare der Nutzer, die im aktuellen Raum sind, werden hier aufgelistet. Klickst du auf ein Bild, lädt es das Skript direkt in deinen Account hoch. Fehlt ein Avatar? Klicke einfach oben rechts auf den **"🔄 Chat Scannen"** Button, um die Seite manuell abzusuchen.
+Wechsle in den Tab **Klauen**. Hier siehst du die Avatare aus deinem aktuellen Raum. Willst du mehr? Klicke auf **"🌍 Online-User Scannen"**, um die Avatare *aller* aktuell eingeloggten Spieler des gesamten Servers zu laden. Ein Klick auf ein Bild speichert es direkt in deinem Account.
 
 **Wie verkaufe ich Avatare schneller?**
-Öffne im Tandro-Chat deinen Kleiderschrank und wechsle dann im Tndr-HX Menü auf den Tab **Markt**. Dort siehst du nun alle deine Avatare. Trage oben einen Preis ein und klicke auf die Bilder, um sie sofort in den Markt zu stellen. (Das Skript formatiert sie automatisch in die Kategorie "Sonstiges").
+Wechsle im Tndr-HX Menü auf den Tab **Markt** und klicke auf **"👗 Kleiderschrank laden"**. Das Skript holt deine Avatare direkt über die API. Trage oben einen Preis ein und klicke auf die Bilder, um sie sofort in den Markt zu stellen. (Das Skript formatiert sie automatisch in die Kategorie "Sonstiges").
 
 **Wie aktiviere ich den automatischen Marktplatz-Pusher?**
 
