@@ -13,10 +13,10 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import logging
 import hashlib
-import webbrowser
 import urllib.request
+import webbrowser
 
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.2.0"
 
 # --- Setup AppData Directory ---
 if sys.platform == 'win32':
