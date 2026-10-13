@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Tndr-HX
 // @namespace    tm-tndr-hx-tools
-// @version      1.2.0
-// @description  Unendlich Emojis, Makros, Emoji-Dieb, Block+, Avatar Vault & Profil-Inspektor. Remote-Controlled by Python.
+// @version      1.3.0
+// @description  Das API-Update: Unendlich Emojis, Profil-Spion, Auto-Sell & Emoji-Dieb. Remote-Controlled by Python.
 // @author       Asriel
 // @license      GPL-3.0
 // @match        https://tandro.de/*
@@ -21,7 +21,7 @@
   const API_URL = "http://127.0.0.1:54321/api";
   const avatarHost = 'https://cyehwjytcqcjmsvprrgh.supabase.co/storage/v1/object/public/avatars/';
   const emojiHost = 'https://cyehwjytcqcjmsvprrgh.supabase.co/storage/v1/object/public/emojis/';
-  const SCRIPT_VERSION = "1.3.1";
+  const SCRIPT_VERSION = "1.3.0";
 
   function gmGet(k, d) { try { const v = localStorage.getItem(`tm_${k}`); return v ? JSON.parse(v) : d; } catch { return d; } }
   function gmSet(k, v) { try { localStorage.setItem(`tm_${k}`, JSON.stringify(v)); } catch {} }
@@ -196,6 +196,7 @@
       return (text||'').toString().replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
 
+  /* --- API UPDATE: Stummer Online-Scanner beim Start --- */
   async function silentUpdateKnownUsers() {
       let token = getToken();
       if(!token) return;
@@ -210,7 +211,6 @@
               let changed = false;
               data.users.forEach(u => {
                   const id = String(u.id);
-                  // Priorität auf nickname setzen
                   const name = u.nickname || u.username;
                   if (id && name && state.knownUsers[id] !== name) {
                       state.knownUsers[id] = name;
@@ -224,6 +224,7 @@
       } catch(e) {}
   }
 
+  /* --- API UPDATE: Profil-Inspektor --- */
   async function inspectUser(userId) {
       if (!userId) return showToast('Keine User-ID angegeben!', 'error');
       let token = getToken();
@@ -233,7 +234,6 @@
       if (btn) btn.textContent = 'Lade Daten...';
 
       try {
-          // 1. Basis-Informationen (AP, VIP, Avatar)
           const basicRes = await GM_xmlhttpRequestPromise({
               method: 'GET',
               url: `https://tandro.de/api/users/${userId}`,
@@ -241,7 +241,6 @@
           });
           const basicData = JSON.parse(basicRes.responseText);
 
-          // 2. Profil-Informationen (Banner, Texte)
           const profRes = await GM_xmlhttpRequestPromise({
               method: 'GET',
               url: `https://tandro.de/api/users/${userId}/profile`,
@@ -264,8 +263,8 @@
       const u = basic.user || {};
       const p = profile.profile || {};
 
-      // Das echte Level ist "schoolrank", Klasse ist "roll"
-      const userLevel = u.schoolrank || u.level || '?';
+      // FIX: Richtiges Level & Klasse extrahieren (schützt vor Lvl 6 Bug)
+      const userLevel = u.schoolrank || p.level || u.level || '?';
       const userClass = u.roll ? ` | Klasse: ${escapeHtml(u.roll)}` : '';
 
       const avatarUrl = basic.avatarUrl || (u.currentava ? `https://cyehwjytcqcjmsvprrgh.supabase.co/storage/v1/object/public/avatars/${u.currentava}` : '');
@@ -292,6 +291,7 @@
                           ${escapeHtml(u.nickname || u.username || 'Unbekannt')}
                           <span style="font-size:10px; color:#aaa; font-weight:normal;">(ID: ${u.id})</span>
                       </div>
+                      <!-- FIX: AP Visualisierung als Sterne (Activity Points vs Currency) -->
                       <div style="font-size:11px; color:#3ba55c; font-weight:bold; margin-top:2px;">
                           ${u.is_vip ? '💎 VIP &nbsp; ' : ''}🌟 ${Number(u.activitypoints || 0).toLocaleString('de-DE')} Aktivitätspunkte
                       </div>
@@ -321,6 +321,7 @@
       resDiv.style.display = 'flex';
   }
 
+  /* --- API UPDATE: Kleiderschrank & Markt --- */
   async function fetchOwnAvatars() {
       let token = getToken();
       if (!token) return;
@@ -377,7 +378,6 @@
           let found = 0;
           if(data.users) {
               data.users.forEach(u => {
-                  // Merken der IDs nebenbei
                   const id = String(u.id);
                   const name = u.nickname || u.username;
                   if (id && name && state.knownUsers[id] !== name) {
@@ -397,6 +397,7 @@
       if(btn) btn.textContent = '🌍 Online-User Scannen';
   }
 
+  /* --- API UPDATE: Out of the Box Upload --- */
   async function processAndUploadAvatar(url, manualClick = false) {
       if (uploadedAvatars.has(url)) {
           if(manualClick) showToast('Diesen Avatar hast du bereits (oder geklaut)!', 'info');
@@ -420,9 +421,11 @@
 
           let base64 = canvas.toDataURL('image/png');
 
+          // FIX: Direkter API Payload (kein Anlernen mehr nötig)
           let payload = {
               image: base64,
-              userId: myId
+              userId: myId,
+              categoryId: 20 // 20 = Kategorie "Sonstiges"
           };
 
           const upRes = await GM_xmlhttpRequestPromise({
@@ -446,6 +449,7 @@
       }
   }
 
+  /* --- API UPDATE: Out of the Box Sell --- */
   async function sellAvatar(avatarObj, silent = false) {
       let token = getToken();
       if (!token) {
@@ -456,6 +460,7 @@
       const priceInput = document.getElementById('tm-sell-price');
       const price = priceInput ? parseInt(priceInput.value) : 10;
 
+      // FIX: Direkter API Payload (kein Anlernen mehr nötig)
       let payload = {
           useravatar_id: avatarObj.id,
           price: isNaN(price) ? 10 : price,
@@ -575,6 +580,7 @@
       const btn = document.getElementById('tm-extend-market');
       if (btn && !silent) { btn.disabled = true; btn.textContent = 'Pushe...'; btn.style.opacity = '0.7'; }
 
+      // Perfekte Push-Reihenfolge (Älteste zuerst, neueste zuletzt)
       const sortedListings = [...state.myListings].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
 
       let successCount = 0;
@@ -600,6 +606,7 @@
       }
   }
 
+  /* --- LEAN WEB-SOCKET INTERCEPTOR (Ohne Fetch Hooks!) --- */
   function injectWebSocketInterceptor() {
     const script = document.createElement('script');
     script.textContent = `(${function() {
@@ -616,38 +623,6 @@
             window.__tndrhxWS.send(e.detail);
         }
       });
-
-      const origFetch = window.fetch;
-      window.fetch = async function(...args) {
-          const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url ? args[0].url : '');
-          const opts = args[1] || {};
-
-          const response = await origFetch.apply(this, args);
-          if (url.includes('/api/avatars') && (!opts.method || opts.method.toUpperCase() === 'GET')) {
-              try {
-                  const clone = response.clone();
-                  clone.json().then(data => {
-                      if (data && data.avatars) window.dispatchEvent(new CustomEvent('TndrHXOwnAvatars', { detail: JSON.stringify(data.avatars) }));
-                  }).catch(e => {});
-              } catch(e) {}
-          }
-          return response;
-      };
-
-      const origOpen = XMLHttpRequest.prototype.open;
-      const origSend = XMLHttpRequest.prototype.send;
-      XMLHttpRequest.prototype.open = function(method, url) { this._url = url; this._method = method; return origOpen.apply(this, arguments); };
-      XMLHttpRequest.prototype.send = function(body) {
-          this.addEventListener('load', function() {
-              if (this._url && this._url.includes('/api/avatars') && this._method && this._method.toUpperCase() === 'GET') {
-                  try {
-                      const data = JSON.parse(this.responseText);
-                      if (data && data.avatars) window.dispatchEvent(new CustomEvent('TndrHXOwnAvatars', { detail: JSON.stringify(data.avatars) }));
-                  } catch(e) {}
-              }
-          });
-          return origSend.apply(this, arguments);
-      };
 
       const hasBlockedWord = (txt) => {
         if (!txt || typeof txt !== 'string') return false;
@@ -776,12 +751,12 @@
   function injectInspectorButton(rootNode) {
       if (!rootNode || !rootNode.querySelectorAll) return;
       try {
+          // FIX: Suche nach span.font-medium (neue Tandro Klassen)
           const nameEls = rootNode.querySelectorAll('.username, .name, .sender, span.font-medium');
           nameEls.forEach(el => {
               if (el.dataset.tmInspected) return;
               el.dataset.tmInspected = 'true';
 
-              // Sauberes Extrahieren des Textes ohne Child-Elemente
               const userName = Array.from(el.childNodes)
                   .filter(node => node.nodeType === Node.TEXT_NODE)
                   .map(node => node.textContent)
@@ -794,6 +769,7 @@
               btn.style.cssText = 'cursor:pointer; font-size:12px; margin-left:4px; opacity:0; transition:opacity 0.2s; filter:grayscale(0.5);';
               btn.title = `Profil von ${escapeHtml(userName)} inspizieren`;
 
+              // FIX: Neue message-... IDs abdecken
               const parentMsg = el.closest('[id^="message-"], .message, .chat-message, .log-item');
               if (parentMsg) {
                   parentMsg.addEventListener('mouseenter', () => btn.style.opacity = '1');
@@ -810,7 +786,6 @@
                   e.preventDefault(); e.stopPropagation();
                   let targetId = null;
 
-                  // Fehler-Tolerante Suche: Ignoriert Groß-/Kleinschreibung und Leerzeichen
                   const searchName = userName.toLowerCase().trim();
                   for (const [id, name] of Object.entries(state.knownUsers)) {
                       if (name.toLowerCase().trim() === searchName) {
@@ -843,6 +818,7 @@
 
   function handleSeenEmojiInDOM(img) {
     const url = img.src;
+    // FIX: Tandro IDs "message-..."
     const msgEl = img.closest('[id^="message-"], [data-user-id], .message, .chat-message, .chat-line, .speech-bubble, .message-content, .msg, .log-item, .chat-log, .chat');
     if (!msgEl) return;
 
@@ -880,6 +856,7 @@
     if (!state.seenEmojis.some(em => em.url === url) && !state.localEmojis.some(em => em.dataUrl === url)) {
         let sender = 'Unbekannt';
         if (msgEl) {
+            // FIX: Name über Tailwind Klassen finden
             const nameEl = msgEl.querySelector('.username, .name, .sender, span.font-medium');
             if (nameEl) {
                 sender = Array.from(nameEl.childNodes)
@@ -1003,7 +980,6 @@
         const extract = (u) => {
           if (!u || typeof u !== 'object') return;
           const id = String(u.userId || u.id);
-          // FIX: Nickname Priorität, da dieser mit Sonderzeichen gerendert wird
           const name = u.nickname || u.senderName || u.username || u.name;
           if (id && id !== 'undefined' && name && state.knownUsers[id] !== name) {
             state.knownUsers[id] = name; changed = true;
@@ -1081,6 +1057,7 @@
     const emoji = state.localEmojis.find(e => String(e.id) === id);
     if (!emoji) return false;
 
+    // FIX: Automatisches Erkennen von GIFs für die Sprechblase
     const isAnimatedGif = emoji.dataUrl.includes('image/gif') || emoji.dataUrl.toLowerCase().includes('.gif');
 
     const payload = {
@@ -1326,7 +1303,7 @@
       const row = document.createElement('div'); row.style.cssText = 'display:flex;gap:4px;margin-top:4px;';
       const sendBtn = document.createElement('button'); sendBtn.className = 'tm-btn tm-btn-primary'; sendBtn.style.flex = '1'; sendBtn.textContent = '📤 In Chat senden';
       sendBtn.onclick = () => sendText(m.text);
-      const delBtn = document.createElement('button'); delBtn.className = 'tm-btn tm-btn-danger'; delBtn.style.padding = '0 10px'; delBtn.textContent = '🗑️️';
+      const delBtn = document.createElement('button'); delBtn.className = 'tm-btn tm-btn-danger'; delBtn.style.padding = '0 10px'; delBtn.textContent = '🗑️';
       delBtn.onclick = () => { state.macros = state.macros.filter(x => String(x.id) !== String(m.id)); renderMacros(); apiCall('/action', 'POST', {action: 'remove_macro', payload: m.id}); };
       row.appendChild(sendBtn); row.appendChild(delBtn); card.appendChild(row); list.appendChild(card);
     }
