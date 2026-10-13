@@ -16,7 +16,7 @@ import hashlib
 import urllib.request
 import webbrowser
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 
 # --- Setup AppData Directory ---
 if sys.platform == 'win32':
@@ -287,7 +287,11 @@ def handle_ws_event(direction: str, event: str, data, my_id: str = ""):
             rid = msg_data.get("room") or msg_data.get("roomId")
             user = (msg_data.get("user") or msg_data.get("nickname") or msg_data.get("senderName") or msg_data.get("userId") or "").strip()
             text = (msg_data.get("chatLine") or msg_data.get("message") or msg_data.get("speechBubbleText") or msg_data.get("content") or "").strip()
+            ts = (msg_data.get("timestamp") or msg_data.get("time") or "").strip()
             
+            if not ts:
+                ts = datetime.now().isoformat()
+
             is_server = bool(msg_data.get("isServerMessage", False))
             is_join = bool(msg_data.get("isJoin", False))
             is_leave = bool(msg_data.get("isLeave", False))
@@ -298,7 +302,7 @@ def handle_ws_event(direction: str, event: str, data, my_id: str = ""):
             if server_id:
                 mid = server_id
             else:
-                raw = f"{rid}|{datetime.now().isoformat()}|{user}|{text}|{is_server}|{is_join}|{is_leave}"
+                raw = f"{rid}|{ts}|{user}|{text}|{is_server}|{is_join}|{is_leave}"
                 mid = "ws-" + hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()[:16]
 
             if not logger_state.mark_seen(mid):
@@ -312,7 +316,7 @@ def handle_ws_event(direction: str, event: str, data, my_id: str = ""):
             room_name = logger_state.get_room_name(rid if rid is not None else logger_state.current_room_id)
 
             logger_state.log_chat_event({
-                "ts": datetime.now().isoformat(),
+                "ts": ts,
                 "dir": "in",
                 "room_id": int(rid) if rid is not None else logger_state.current_room_id,
                 "room_name": room_name,
@@ -593,7 +597,7 @@ class ModernTndrHXGUI:
         self.update_gui_loop()
 
     def manual_update_check(self):
-        threading.Thread(target=check_github_update, args=(True, self.root), daemon=True).start()
+        threading.Thread(target=check_github_update, kwargs={'manual': True, 'root': self.root}, daemon=True).start()
 
     def create_toggle(self, text, variable, db_key):
         def on_toggle():
